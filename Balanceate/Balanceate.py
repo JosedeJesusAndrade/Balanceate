@@ -1,4 +1,4 @@
-# Balanceate.py
+# Balanceate.py - Archivo principal optimizado para Reflex 0.8.13
 import reflex as rx
 from Balanceate.state import State
 from Balanceate.view.balance import balance
@@ -9,7 +9,8 @@ from Balanceate.view.footer import footer
 from Balanceate.view.auth import auth
 from Balanceate.view.login_page import login
 from Balanceate.view.registro_page import registro_page
-from Balanceate.view.config_page import config_page
+from Balanceate.view.config_page_simple import config_page
+from Balanceate.view.test_localstorage import test_localstorage_page
 from Balanceate.styles import styles
 from rxconfig import config
 
@@ -66,21 +67,20 @@ def index() -> rx.Component:
             min_height="100vh",
         )
     )
- # Inicializa el estado global
-app_state = State
-
-# Configuración de la aplicación
+ # Configuración mejorada para Reflex 0.8.13
+# Configuración optimizada para Reflex 0.8.13
 app = rx.App(
     stylesheets=styles.STYLESHEETS,
     style=styles.BASE_STYLE,
 )
 
-# Agregar las páginas a la aplicación usando el método compatible
+# Agregar las páginas a la aplicación
 app.add_page(
     index,
     route="/",
     title="Inicio - Balanceate",
-    description="Gestión de finanzas personales"
+    description="Gestión de finanzas personales",
+    on_load=State.on_load  # ← Registrar verificación de sesión persistente
 )
 
 app.add_page(
@@ -94,8 +94,17 @@ app.add_page(
     config_page,
     route="/config",
     title="Configuración - Balanceate",
-    description="Configuraciones de la cuenta"
+    description="Configuraciones de la cuenta",
+    on_load=State.on_load  # ← También verificar sesión en configuración
+)
+
+app.add_page(
+    test_localstorage_page,
+    route="/prueba",
+    title="Prueba LocalStorage - Balanceate",
+    description="Página de prueba para localStorage",
+    on_load=State.on_load  # ← Verificar sesión también en página de pruebas
 )
 
 # Carga datos iniciales antes de arrancar
-app_state.iniciar()
+State.iniciar()

@@ -1,5 +1,8 @@
 import reflex as rx
 
+import reflex as rx
+
+# Configuración optimizada para Reflex 0.8.13
 config = rx.Config(
     app_name="Balanceate",
     frontend_packages=[
@@ -7,6 +10,9 @@ config = rx.Config(
     ],
     telemetry_enabled=False,
     dev_mode=True,
-    routes_path="routes",
-    reload_dirs=["Balanceate"]
+    reload_dirs=["Balanceate"],
+    # Desactivar plugins problemáticos
+    disable_plugins=[
+        "reflex.plugins.sitemap.SitemapPlugin"
+    ],
 )

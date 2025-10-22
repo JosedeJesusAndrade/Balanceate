@@ -4,6 +4,18 @@ import bcrypt
 from jwt import encode, decode
 from Balanceate.db.db import movimientos_collection, balances_collection, usuarios_collection
 
+# Nueva clase AppState con persistencia usando rx.LocalStorage
+class AppState(rx.State):
+    auth_token: str = rx.LocalStorage(
+        "",
+        name="auth_token", 
+        sync=True
+    )
+    
+    def set_auth_token(self, value: str):
+        """Setter explícito para auth_token."""
+        self.auth_token = value
+
 # Configuración de JWT
 JWT_SECRET = "tu_clave_secreta_aqui"  # En producción, usar variable de entorno
 JWT_EXPIRES_IN = timedelta(days=7)  # Token válido por 7 días
@@ -25,8 +37,8 @@ class Balance(rx.Base):
     total: float = 0.0
     ultima_actualizacion: str = ""
 
-class State(rx.State):
-    """Estado global de la aplicación."""
+class State(AppState):
+    """Estado global de la aplicación que extiende AppState para persistencia."""
     # Estado de autenticación
     usuario_actual: Usuario = None
     email_login: str = ""
@@ -36,25 +48,24 @@ class State(rx.State):
     nombre_registro: str = ""
     error_mensaje: str = ""
 
-    # Token de sesión como variable de estado
-    token_sesion: str = ""
-    
-    def set_token(self, token: str):
-        """Guarda el token en el estado de la aplicación."""
-        self.token_sesion = token
-
-    def get_token(self) -> str:
-        """Obtiene el token del estado de la aplicación."""
-        return self.token_sesion
-
-    def on_mount(self):
-        """Se ejecuta cuando se monta el componente."""
-        # Intentar recuperar la sesión desde localStorage
-        token = self.get_token_from_storage()
-        if token:
-            usuario_id = self.verificar_token(token)
+    def on_load(self):
+        """Se ejecuta cuando se carga la página - verifica sesión persistente."""
+        print("🔄 on_load ejecutándose...")  # Debug
+        print(f"🔑 Token en localStorage: {self.auth_token[:20] if self.auth_token else 'VACÍO'}...")  # Debug
+        
+        if self.auth_token:
+            print("✅ Token encontrado, verificando validez...")  # Debug
+            usuario_id = self.verificar_token(self.auth_token)
             if usuario_id:
+                print(f"✅ Token válido para usuario: {usuario_id}")  # Debug
                 self.cargar_usuario_por_id(usuario_id)
+                print("✅ Sesión restaurada exitosamente")  # Debug
+            else:
+                print("❌ Token inválido, limpiando localStorage...")  # Debug
+                # Token inválido, limpiar localStorage
+                self.auth_token = ""
+        else:
+            print("ℹ️ No hay token en localStorage")  # Debug
     
     # Estado de la aplicación
     balance: Balance = Balance(usuario_id="", total=0.0, ultima_actualizacion=datetime.now().isoformat())
@@ -216,13 +227,21 @@ class State(rx.State):
 
     def verificar_token(self, token: str) -> str:
         """Verifica un token JWT y retorna el ID del usuario."""
+        if not token:
+            print("🔒 Token vacío o nulo")  # Debug
+            return None
+            
         try:
             payload = decode(token, JWT_SECRET, algorithms=["HS256"])
             if "usuario_id" in payload:
-                return payload["usuario_id"]
-            return None
+                usuario_id = payload["usuario_id"]
+                print(f"🔓 Token válido para usuario: {usuario_id}")  # Debug
+                return usuario_id
+            else:
+                print("🔒 Token no contiene usuario_id")  # Debug
+                return None
         except Exception as e:
-            print(f"Error al verificar token: {str(e)}")  # Para debugging
+            print(f"🔒 Error al verificar token: {str(e)}")  # Para debugging
             return None
 
     def registrar_usuario(self):
@@ -405,8 +424,8 @@ class State(rx.State):
             self.error_mensaje = "Ocurrió un error al iniciar sesión"
 
     def get_token_from_storage(self) -> str:
-        """Obtiene el token del estado de la aplicación."""
-        return self.token_sesion
+        """Obtiene el token desde localStorage del navegador."""
+        return self.get_token()
 
     def cargar_usuario_por_id(self, usuario_id: str):
         """Carga un usuario y sus datos por ID."""
@@ -414,23 +433,44 @@ class State(rx.State):
             from bson import ObjectId
             # Convertir el ID a ObjectId para la búsqueda en MongoDB
             usuario = usuarios_collection.find_one({"_id": ObjectId(usuario_id)})
-            print(f"Buscando usuario con ID: {usuario_id}")  # Debug
+            print(f"🔍 Buscando usuario con ID: {usuario_id}")  # Debug
             
             if usuario:
-                print(f"Usuario encontrado: {usuario['email']}")  # Debug
+                print(f"👤 Usuario encontrado: {usuario['email']}")  # Debug
                 self.usuario_actual = Usuario(
                     id=str(usuario["_id"]),
                     email=usuario["email"],
                     nombre=usuario["nombre"]
                 )
+                
+                # Cargar balance del usuario (igual que en login)
+                balance = balances_collection.find_one({"usuario_id": str(usuario["_id"])})
+                if balance:
+                    self.balance = Balance(
+                        usuario_id=str(usuario["_id"]),
+                        total=float(balance["total"]),
+                        ultima_actualizacion=balance["ultima_actualizacion"]
+                    )
+                    print(f"💰 Balance cargado: ${balance['total']}")  # Debug
+                else:
+                    # Si no existe balance, crear uno nuevo
+                    self.balance = Balance(
+                        usuario_id=str(usuario["_id"]),
+                        total=0.0,
+                        ultima_actualizacion=datetime.now().isoformat()
+                    )
+                    print("💰 Balance inicial creado")  # Debug
+                
+                # Cargar movimientos del usuario
                 self.cargar_movimientos()
+                print(f"📊 Movimientos cargados: {len(self.movimientos)}")  # Debug
             else:
-                print(f"No se encontró usuario con ID: {usuario_id}")  # Debug
+                print(f"❌ No se encontró usuario con ID: {usuario_id}")  # Debug
         except Exception as e:
-            print(f"Error al cargar usuario: {str(e)}")  # Debug
+            print(f"💥 Error al cargar usuario: {str(e)}")  # Debug
 
     def guardar_sesion(self, usuario_id: str):
-        """Guarda el token en el estado de la aplicación."""
+        """Guarda el token en localStorage usando AppState."""
         try:
             print(f"Generando token para usuario: {usuario_id}")  # Debug
             token = self.generar_token(usuario_id)
@@ -440,9 +480,9 @@ class State(rx.State):
                 return False
                 
             print("Token generado correctamente")  # Debug
-            # Guardar token directamente en el estado
-            self.token_sesion = token
-            print("Token guardado en el estado")  # Debug
+            # Guardar token en localStorage usando AppState
+            self.set_auth_token(token)
+            print("Token guardado en localStorage")  # Debug
             return True
             
         except Exception as e:
@@ -452,6 +492,20 @@ class State(rx.State):
 
     def logout(self):
         """Cerrar sesión y redirigir al login."""
+        print("🚪 Iniciando logout...")  # Debug
+        
+        # Limpiar estado del usuario
         self.usuario_actual = None
-        self.token_sesion = ""
+        print("👤 Usuario actual limpiado")  # Debug
+        
+        # Limpiar localStorage usando AppState
+        self.auth_token = ""
+        print("🔑 Token eliminado de localStorage")  # Debug
+        
+        # Limpiar otros datos de sesión
+        self.balance = Balance(usuario_id="", total=0.0, ultima_actualizacion=datetime.now().isoformat())
+        self.movimientos = []
+        print("📊 Datos de sesión limpiados")  # Debug
+        
+        print("✅ Logout completado, redirigiendo...\n")  # Debug
         return rx.redirect("/")

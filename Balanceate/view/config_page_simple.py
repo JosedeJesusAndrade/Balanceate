@@ -7,24 +7,25 @@ from Balanceate.view.navbar import navbar
 __all__ = ["config_page"]
 
 def config_page() -> rx.Component:
-    return rx.fragment(
+    return rx.box(
         # Navbar con título 'Configuración'
         navbar(page_title="Configuración"),
         
-        # Contenedor principal con mejor estructura
-        rx.container(
+        # Contenedor principal centrado
+        rx.center(
             rx.vstack(
-                # Card de configuraciones mejorado
-                rx.card(
+                rx.box(
                     rx.vstack(
-                        # Título de la sección con mejor tipografía
+                        # Título de la sección
                         rx.heading(
                             "Configuraciones de la cuenta",
-                            size="6",
+                            size="4",
                             color=Colors.SUCCESS.value,
-                            weight="bold",
-                            text_align="center",
-                            margin_bottom="4"
+                            font_family=Font.DEFAULT.value,
+                            font_weight=FontWeight.BOLD.value,
+                            padding_top="15px",
+                            margin_bottom="6",
+                            align="center",
                         ),
                         
                         # Información del usuario
@@ -33,59 +34,61 @@ def config_page() -> rx.Component:
                             rx.vstack(
                                 rx.text(
                                     "Usuario: " + State.usuario_actual.nombre,
-                                    size="4",
-                                    weight="medium"
+                                    font_size="1rem",
+                                    font_weight="medium"
                                 ),
                                 rx.text(
                                     "Email: " + State.usuario_actual.email,
-                                    size="3",
-                                    color="gray"
+                                    font_size="0.9rem",
+                                    color="gray.600"
                                 ),
                                 spacing="2",
                                 width="100%"
                             )
                         ),
                         
-                        # Separador visual
-                        rx.separator(width="100%", margin_y="4"),
-                        
-                        # Descripción mejorada
+                        # Descripción
                         rx.text(
                             "Gestiona las configuraciones de tu cuenta",
-                            size="3",
-                            color="gray",
+                            font_size="1.125rem",
+                            color="gray.600",
+                            margin_bottom="8",
                             text_align="center",
-                            margin_bottom="4"
                         ),
                         
-                        # Botón de cerrar sesión mejorado
+                        # Botón de cerrar sesión
                         rx.button(
-                            rx.icon("log-out", size=16, margin_right="2"),
                             "Cerrar sesión",
                             on_click=State.logout,
-                            variant="solid",
-                            color_scheme="red",
-                            size="3",
                             width="100%",
-                            cursor="pointer"
+                            bg="red.500",
+                            color="white",
+                            size="3",
+                            padding="4",
+                            margin_top="6",
+                            _hover={"bg": "red.600"},
                         ),
                         
                         width="100%",
                         spacing="4",
                         align_items="center",
                     ),
-                    size="3",
-                    padding="6"
+                    width="100%",
+                    max_width="448px",
+                    padding_y="8",
+                    padding_x="10",
+                    bg="white",
+                    border_radius="xl",
+                    box_shadow="0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
                 ),
-                padding_top="120px",  # Espacio para el navbar
-                max_width="500px",
-                spacing="4"
+                width="100%",
+                spacing="6",
+                padding_top="100px",  # Espacio para el navbar
+                padding_x="4",
             ),
-            size="4",
-            padding="4"
+            width="100%",
         ),
-        
-        # Fondo de la página
+        width="100%",
         min_height="100vh",
-        background="linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)"
+        bg="gray.50",
     )
