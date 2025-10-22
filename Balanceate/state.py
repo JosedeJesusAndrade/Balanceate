@@ -1,5 +1,7 @@
+import os
 import reflex as rx
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import bcrypt
 from jwt import encode, decode
 from Balanceate.db.db import movimientos_collection, balances_collection, usuarios_collection
@@ -16,9 +18,11 @@ class AppState(rx.State):
         """Setter explícito para auth_token."""
         self.auth_token = value
 
+load_dotenv()  # Cargar variables de entorno desde .env
+
 # Configuración de JWT
-JWT_SECRET = "tu_clave_secreta_aqui"  # En producción, usar variable de entorno
-JWT_EXPIRES_IN = timedelta(days=7)  # Token válido por 7 días
+JWT_SECRET = os.getenv("JWT_SECRET", "tu_clave_secreta_aqui")  # En producción, usar variable de entorno
+JWT_EXPIRES_IN = timedelta(days=int(os.getenv("JWT_EXPIRES_DAYS", 7)))  # Token válido por 7 días
 
 class Usuario(rx.Base):
     id: str
