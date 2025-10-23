@@ -1,23 +1,26 @@
-
-from pymongo.mongo_client import MongoClient
+from pymongo import MongoClient
 from pymongo.server_api import ServerApi
+import os
+from dotenv import load_dotenv
 
-uri = "mongodb+srv://mono:monono@cluster0.ajkdq2c.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+load_dotenv()
 
-# Create a new client and connect to the server
-client = MongoClient(uri, server_api=ServerApi('1'))
+uri = os.getenv("MONGO_URI")
 
-db = client["balanceate"]  # Nombre de tu base de datos
+client = MongoClient(
+    uri,
+    server_api=ServerApi('1'),
+    serverSelectionTimeoutMS=10000,  # 10s para detectar problemas rápido
+)
 
-# Colecciones de la base de datos
+db = client["balanceate"]
+
 movimientos_collection = db["movimientos"]
 usuarios_collection = db["usuarios"]
 balances_collection = db["balances"]
 
-
-# Send a ping to confirm a successful connection
 try:
     client.admin.command('ping')
-    print("Pinged your deployment. You successfully connected to MongoDB!")
+    print("✅ Conectado exitosamente a MongoDB Atlas.")
 except Exception as e:
-    print(e)
+    print("❌ Error de conexión con MongoDB:", e)

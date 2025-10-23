@@ -21,7 +21,7 @@ class AppState(rx.State):
 load_dotenv()  # Cargar variables de entorno desde .env
 
 # Configuración de JWT
-JWT_SECRET = os.getenv("JWT_SECRET", "tu_clave_secreta_aqui")  # En producción, usar variable de entorno
+JWT_SECRET = os.getenv("JWT_SECRET", "tu_clave_secreta_aqui")  
 JWT_EXPIRES_IN = timedelta(days=int(os.getenv("JWT_EXPIRES_DAYS", 7)))  # Token válido por 7 días
 
 class Usuario(rx.Base):
@@ -159,7 +159,8 @@ class State(AppState):
         if self.usuario_actual:
             query["usuario_id"] = self.usuario_actual.id
             
-        docs = list(movimientos_collection.find(query).sort("fecha", -1))
+        # Limitar los resultados para mejorar performance
+        docs = list(movimientos_collection.find(query).sort("fecha", -1).limit(100))
         self.movimientos = []
         balance_total = 0.0
         
@@ -248,184 +249,188 @@ class State(AppState):
             print(f"🔒 Error al verificar token: {str(e)}")  # Para debugging
             return None
 
-    def registrar_usuario(self):
+    @rx.event(background=True)
+    async def registrar_usuario(self):
         """Registra un nuevo usuario."""
         print("Iniciando proceso de registro...")  # Debug
         
-        try:
-            # Validación de campos
-            if not self.email_registro or not self.password_registro or not self.nombre_registro:
-                self.error_mensaje = "Todos los campos son requeridos"
-                return
-
-            # Validación básica de email
-            if "@" not in self.email_registro or "." not in self.email_registro:
-                self.error_mensaje = "Por favor ingresa un email válido"
-                return
-
-            # Validación de longitud de contraseña
-            if len(self.password_registro) < 6:
-                self.error_mensaje = "La contraseña debe tener al menos 6 caracteres"
-                return
-                
-            # Verificar si el usuario ya existe
-            if usuarios_collection.find_one({"email": self.email_registro.lower().strip()}):
-                self.error_mensaje = "El email ya está registrado"
-                return
-                
-            print(f"Registrando nuevo usuario: {self.email_registro}")  # Debug
-                
+        async with self:
             try:
-                # Hash de la contraseña
-                salt = bcrypt.gensalt()
-                password_bytes = self.password_registro.encode('utf-8')
-                hashed = bcrypt.hashpw(password_bytes, salt)
+                # Validación de campos
+                if not self.email_registro or not self.password_registro or not self.nombre_registro:
+                    self.error_mensaje = "Todos los campos son requeridos"
+                    return
+
+                # Validación básica de email
+                if "@" not in self.email_registro or "." not in self.email_registro:
+                    self.error_mensaje = "Por favor ingresa un email válido"
+                    return
+
+                # Validación de longitud de contraseña
+                if len(self.password_registro) < 6:
+                    self.error_mensaje = "La contraseña debe tener al menos 6 caracteres"
+                    return
                     
-                # Crear nuevo usuario con datos sanitizados
-                nuevo_usuario = {
-                    "email": self.email_registro.lower().strip(),
-                    "password": hashed,
-                    "nombre": self.nombre_registro.strip(),
-                    "fecha_registro": datetime.now().isoformat()
-                }
-                
-                # Insertar usuario y obtener ID
-                resultado = usuarios_collection.insert_one(nuevo_usuario)
-                if not resultado.inserted_id:
-                    raise Exception("No se pudo crear el usuario")
+                # Verificar si el usuario ya existe
+                if usuarios_collection.find_one({"email": self.email_registro.lower().strip()}):
+                    self.error_mensaje = "El email ya está registrado"
+                    return
                     
-                usuario_id = str(resultado.inserted_id)
-                print(f"Usuario creado con ID: {usuario_id}")  # Debug
-                
-                # Crear usuario en el estado
-                self.usuario_actual = Usuario(
-                    id=usuario_id,
-                    email=self.email_registro.lower().strip(),
-                    nombre=self.nombre_registro.strip()
-                )
-                
-                # Guardar sesión
-                if not self.guardar_sesion(usuario_id):
-                    raise Exception("No se pudo guardar la sesión")
-                
-                print("Sesión guardada")  # Debug
-                
-                # Inicializar balance para el nuevo usuario
+                print(f"Registrando nuevo usuario: {self.email_registro}")  # Debug
+                    
                 try:
-                    # Guardar balance inicial en la base de datos primero
-                    balance_inicial = {
-                        "usuario_id": usuario_id,
-                        "total": 0.0,
-                        "ultima_actualizacion": datetime.now().isoformat()
+                    # Hash de la contraseña
+                    salt = bcrypt.gensalt()
+                    password_bytes = self.password_registro.encode('utf-8')
+                    hashed = bcrypt.hashpw(password_bytes, salt)
+                        
+                    # Crear nuevo usuario con datos sanitizados
+                    nuevo_usuario = {
+                        "email": self.email_registro.lower().strip(),
+                        "password": hashed,
+                        "nombre": self.nombre_registro.strip(),
+                        "fecha_registro": datetime.now().isoformat()
                     }
                     
-                    resultado_balance = balances_collection.insert_one(balance_inicial)
-                    if not resultado_balance.inserted_id:
-                        raise Exception("No se pudo crear el balance inicial")
+                    # Insertar usuario y obtener ID
+                    resultado = usuarios_collection.insert_one(nuevo_usuario)
+                    if not resultado.inserted_id:
+                        raise Exception("No se pudo crear el usuario")
+                        
+                    usuario_id = str(resultado.inserted_id)
+                    print(f"Usuario creado con ID: {usuario_id}")  # Debug
                     
-                    # Actualizar el balance en el estado
+                    # Crear usuario en el estado
+                    self.usuario_actual = Usuario(
+                        id=usuario_id,
+                        email=self.email_registro.lower().strip(),
+                        nombre=self.nombre_registro.strip()
+                    )
+                    
+                    # Guardar sesión
+                    if not self.guardar_sesion(usuario_id):
+                        raise Exception("No se pudo guardar la sesión")
+                    
+                    print("Sesión guardada")  # Debug
+                    
+                    # Inicializar balance para el nuevo usuario
+                    try:
+                        # Guardar balance inicial en la base de datos primero
+                        balance_inicial = {
+                            "usuario_id": usuario_id,
+                            "total": 0.0,
+                            "ultima_actualizacion": datetime.now().isoformat()
+                        }
+                        
+                        resultado_balance = balances_collection.insert_one(balance_inicial)
+                        if not resultado_balance.inserted_id:
+                            raise Exception("No se pudo crear el balance inicial")
+                        
+                        # Actualizar el balance en el estado
+                        self.balance = Balance(
+                            usuario_id=usuario_id,
+                            total=0.0,
+                            ultima_actualizacion=datetime.now().isoformat()
+                        )
+                    except Exception as e:
+                        print(f"Error al crear balance: {str(e)}")
+                        raise Exception("Error al crear el balance inicial")
+                    
+                    # Limpiar campos
+                    self.email_registro = ""
+                    self.password_registro = ""
+                    self.nombre_registro = ""
+                    self.error_mensaje = ""
+                    
+                    print("Registro exitoso, redirigiendo...")  # Debug
+                    
+                    # Forzar la actualización del estado y la redirección
+                    return rx.redirect("/")
+                    
+                except Exception as e:
+                    # Si algo falla durante el proceso, intentar limpiar datos parcialmente creados
+                    if usuario_id:
+                        try:
+                            usuarios_collection.delete_one({"_id": resultado.inserted_id})
+                            balances_collection.delete_one({"usuario_id": usuario_id})
+                        except:
+                            pass
+                    raise e
+                    
+            except Exception as e:
+                print(f"Error en registro: {str(e)}")  # Debug
+                self.error_mensaje = "Ocurrió un error al registrar el usuario. Por favor intenta nuevamente."
+
+    @rx.event(background=True)
+    async def login(self):
+        """Inicia sesión de usuario."""
+        print("Iniciando proceso de login...")  # Debug
+        
+        async with self:
+            if not self.email_login or not self.password_login:
+                self.error_mensaje = "Email y contraseña son requeridos"
+                return
+
+            try:
+                # Buscar usuario por email
+                print(f"Buscando usuario con email: {self.email_login}")  # Debug
+                usuario = usuarios_collection.find_one({"email": self.email_login})
+                
+                # Verificar si existe el usuario
+                if not usuario:
+                    print("Usuario no encontrado")  # Debug
+                    self.error_mensaje = "Email o contraseña incorrectos"
+                    return
+                    
+                # Verificar la contraseña
+                if not bcrypt.checkpw(
+                    self.password_login.encode(), 
+                    usuario["password"]
+                ):
+                    self.error_mensaje = "Email o contraseña incorrectos"
+                    return
+                    
+                # Actualizar estado con usuario encontrado
+                self.usuario_actual = Usuario(
+                    id=str(usuario["_id"]),
+                    email=usuario["email"],
+                    nombre=usuario["nombre"]
+                )
+                
+                # Guardar el token en localStorage
+                self.guardar_sesion(str(usuario["_id"]))
+                
+                # Cargar balance del usuario
+                balance = balances_collection.find_one({"usuario_id": str(usuario["_id"])})
+                if balance:
                     self.balance = Balance(
-                        usuario_id=usuario_id,
+                        usuario_id=str(usuario["_id"]),
+                        total=float(balance["total"]),  # Aseguramos que sea float
+                        ultima_actualizacion=balance["ultima_actualizacion"]
+                    )
+                else:
+                    # Si no existe balance, crear uno nuevo
+                    self.balance = Balance(
+                        usuario_id=str(usuario["_id"]),
                         total=0.0,
                         ultima_actualizacion=datetime.now().isoformat()
                     )
-                except Exception as e:
-                    print(f"Error al crear balance: {str(e)}")
-                    raise Exception("Error al crear el balance inicial")
                 
                 # Limpiar campos
-                self.email_registro = ""
-                self.password_registro = ""
-                self.nombre_registro = ""
+                self.email_login = ""
+                self.password_login = ""
                 self.error_mensaje = ""
                 
-                print("Registro exitoso, redirigiendo...")  # Debug
+                # Cargar movimientos del usuario
+                self.cargar_movimientos()
+                print("Login exitoso, redirigiendo...")  # Debug
                 
                 # Forzar la actualización del estado y la redirección
                 return rx.redirect("/")
                 
             except Exception as e:
-                # Si algo falla durante el proceso, intentar limpiar datos parcialmente creados
-                if usuario_id:
-                    try:
-                        usuarios_collection.delete_one({"_id": resultado.inserted_id})
-                        balances_collection.delete_one({"usuario_id": usuario_id})
-                    except:
-                        pass
-                raise e
-                
-        except Exception as e:
-            print(f"Error en registro: {str(e)}")  # Debug
-            self.error_mensaje = "Ocurrió un error al registrar el usuario. Por favor intenta nuevamente."
-
-    def login(self):
-        """Inicia sesión de usuario."""
-        print("Iniciando proceso de login...")  # Debug
-        
-        if not self.email_login or not self.password_login:
-            self.error_mensaje = "Email y contraseña son requeridos"
-            return
-
-        try:
-            # Buscar usuario por email
-            print(f"Buscando usuario con email: {self.email_login}")  # Debug
-            usuario = usuarios_collection.find_one({"email": self.email_login})
-            
-            # Verificar si existe el usuario
-            if not usuario:
-                print("Usuario no encontrado")  # Debug
-                self.error_mensaje = "Email o contraseña incorrectos"
-                return
-                
-            # Verificar la contraseña
-            if not bcrypt.checkpw(
-                self.password_login.encode(), 
-                usuario["password"]
-            ):
-                self.error_mensaje = "Email o contraseña incorrectos"
-                return
-                
-            # Actualizar estado con usuario encontrado
-            self.usuario_actual = Usuario(
-                id=str(usuario["_id"]),
-                email=usuario["email"],
-                nombre=usuario["nombre"]
-            )
-            
-            # Guardar el token en localStorage
-            self.guardar_sesion(str(usuario["_id"]))
-            
-            # Cargar balance del usuario
-            balance = balances_collection.find_one({"usuario_id": str(usuario["_id"])})
-            if balance:
-                self.balance = Balance(
-                    usuario_id=str(usuario["_id"]),
-                    total=float(balance["total"]),  # Aseguramos que sea float
-                    ultima_actualizacion=balance["ultima_actualizacion"]
-                )
-            else:
-                # Si no existe balance, crear uno nuevo
-                self.balance = Balance(
-                    usuario_id=str(usuario["_id"]),
-                    total=0.0,
-                    ultima_actualizacion=datetime.now().isoformat()
-                )
-            
-            # Limpiar campos
-            self.email_login = ""
-            self.password_login = ""
-            self.error_mensaje = ""
-            
-            # Cargar movimientos del usuario
-            self.cargar_movimientos()
-            print("Login exitoso, redirigiendo...")  # Debug
-            
-            # Forzar la actualización del estado y la redirección
-            return rx.redirect("/")
-            
-        except Exception as e:
-            print(f"Error en login: {str(e)}")  # Para debugging
-            self.error_mensaje = "Ocurrió un error al iniciar sesión"
+                print(f"Error en login: {str(e)}")  # Para debugging
+                self.error_mensaje = "Ocurrió un error al iniciar sesión"
 
     def get_token_from_storage(self) -> str:
         """Obtiene el token desde localStorage del navegador."""
