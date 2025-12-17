@@ -65,22 +65,6 @@ def navbar(page_title: str = "Mi Billetera") -> rx.Component:
                     width="auto",
                     padding="0.5rem"
                 ),
-                # Botón de logout
-                rx.button(
-                    rx.icon(
-                        tag="log-out", 
-                        size=20,
-                        color="red.600"
-                    ),
-                    variant="ghost",
-                    bg="none",
-                    box_shadow="none",
-                    on_click=State.logout,
-                    width="auto",
-                    padding="0.5rem"
-                ),
-                spacing="2",
-                align="center"
             ),
             # Si no hay usuario, solo mostrar configuración
             rx.button(

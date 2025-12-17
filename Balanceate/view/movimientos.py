@@ -12,17 +12,41 @@ def movimientos() -> rx.Component:
             margin_bottom="20px"
         ),
 
+        # Iteramos sobre cada grupo de fecha
         rx.foreach(
-            State.movimientos,
-            lambda m: movimiento(
-                movement=rx.cond(m.tipo != "", m.tipo.capitalize(), "-"),
-                name=rx.cond(m.nombre != "", m.nombre, "-"),
-                date=rx.cond(m.fecha != "", m.fecha, "-"),
-                value=rx.cond(
-                    m.tipo == "ingreso",
-                    f"+${m.valor}",
-                    f"-${m.valor}"
-                )
+            State.movimientos_agrupados,
+            lambda grupo: rx.vstack(
+                # Separador con la etiqueta de fecha
+                rx.box(
+                    rx.text(
+                        grupo[0],  # "Hoy", "Ayer" o fecha
+                        font_size="0.9rem",
+                        font_weight="600",
+                        color="gray",
+                    ),
+                    width="100%",
+                    max_width="600px",
+                    margin_x="auto",
+                    margin_top="20px",
+                    margin_bottom="10px",
+                    padding_left="5px",
+                ),
+                # Movimientos de ese grupo
+                rx.foreach(
+                    grupo[1],
+                    lambda m: movimiento(
+                        movement=rx.cond(m.tipo != "", m.tipo.capitalize(), "-"),
+                        name=rx.cond(m.nombre != "", m.nombre, "-"),
+                        date=rx.cond(m.fecha != "", m.fecha, "-"),
+                        value=rx.cond(
+                            m.tipo == "ingreso",
+                            f"+${m.valor}",
+                            f"-${m.valor}"
+                        )
+                    )
+                ),
+                width="100%",
+                spacing="3",
             )
         ),
 

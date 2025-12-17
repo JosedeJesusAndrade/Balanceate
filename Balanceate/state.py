@@ -32,7 +32,8 @@ class Usuario(rx.Base):
 class Movimiento(rx.Base):
     tipo: str = ""
     nombre: str = ""
-    fecha: str = ""
+    fecha: str = ""  # Solo hora para mostrar (HH:MM:SS)
+    fecha_completa: str = ""  # Fecha completa ISO para agrupar
     valor: float = 0.0
     usuario_id: str = ""
 
@@ -76,6 +77,32 @@ class State(AppState):
     movimientos: list[Movimiento] = []
     nombre: str = ""
     valor: float = 0.0
+
+    @rx.var
+    def movimientos_agrupados(self) -> dict[str, list[Movimiento]]:
+        """Agrupa los movimientos por fecha con etiquetas 'Hoy', 'Ayer' o fecha específica."""
+        from collections import defaultdict
+        grupos = defaultdict(list)
+        
+        hoy = datetime.now().date()
+        ayer = (datetime.now() - timedelta(days=1)).date()
+        
+        for mov in self.movimientos:
+            try:
+                fecha_obj = datetime.fromisoformat(mov.fecha_completa).date()
+                
+                if fecha_obj == hoy:
+                    etiqueta = "Hoy"
+                elif fecha_obj == ayer:
+                    etiqueta = "Ayer"
+                else:
+                    etiqueta = fecha_obj.strftime("%d/%m/%Y")
+                
+                grupos[etiqueta].append(mov)
+            except:
+                grupos["Sin fecha"].append(mov)
+        
+        return dict(grupos)
 
     def set_valor(self, value: str):
         """Recibe el valor como string desde el input, intenta convertir a float."""
@@ -172,6 +199,13 @@ class State(AppState):
                 fecha = doc.get("fecha", datetime.now().isoformat())
                 usuario_id = doc.get("usuario_id", "")
                 
+                # Formatear la fecha para mostrar solo hora (HH:MM:SS)
+                try:
+                    fecha_obj = datetime.fromisoformat(fecha)
+                    hora_formateada = fecha_obj.strftime("%H:%M:%S")
+                except:
+                    hora_formateada = fecha
+                
                 # Asegurarnos de que el valor sea un número válido
                 if not isinstance(valor, (int, float)):
                     valor = 0.0
@@ -181,7 +215,8 @@ class State(AppState):
                     Movimiento(
                         tipo=tipo,
                         nombre=nombre,
-                        fecha=fecha,
+                        fecha=hora_formateada,  # Solo hora para mostrar
+                        fecha_completa=fecha,  # Fecha completa ISO para agrupar
                         valor=str(valor_formateado),  # Convertimos a string para evitar problemas de formato
                         usuario_id=usuario_id
                     )
