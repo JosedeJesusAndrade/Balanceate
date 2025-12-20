@@ -12,28 +12,27 @@ def movimientos() -> rx.Component:
             margin_bottom="20px"
         ),
 
-        # Iteramos sobre cada grupo de fecha
+        # Iterar sobre los grupos de movimientos
         rx.foreach(
             State.movimientos_agrupados,
             lambda grupo: rx.vstack(
-                # Separador con la etiqueta de fecha
+                # Etiqueta del grupo (Hoy, Ayer, o fecha)
                 rx.box(
                     rx.text(
-                        grupo[0],  # "Hoy", "Ayer" o fecha
-                        font_size="0.9rem",
+                        grupo.etiqueta,
+                        font_size="1rem",
                         font_weight="600",
-                        color="gray",
+                        color="#64748b",
                     ),
                     width="100%",
-                    max_width="600px",
+                    max_width="800px",
                     margin_x="auto",
-                    margin_top="20px",
-                    margin_bottom="10px",
-                    padding_left="5px",
+                    padding_y="10px",
+                    padding_left="20px",
                 ),
-                # Movimientos de ese grupo
+                # Movimientos del grupo
                 rx.foreach(
-                    grupo[1],
+                    grupo.movimientos,
                     lambda m: movimiento(
                         movement=rx.cond(m.tipo != "", m.tipo.capitalize(), "-"),
                         name=rx.cond(m.nombre != "", m.nombre, "-"),
@@ -47,15 +46,16 @@ def movimientos() -> rx.Component:
                 ),
                 width="100%",
                 spacing="3",
+                margin_bottom="26px",
             )
         ),
 
         align="center",
         spacing="4",
-        width=["100%", "90%", "800px"],
+        width=["100%", "100%", "900px"],
         max_width="900px",
         margin_x="auto",
-        padding=["15px", "20px", "30px"],
+        padding=["5px", "20px", "30px"],
         margin_y=["20px", "30px", "40px"],
         margin_bottom="100px",
     )

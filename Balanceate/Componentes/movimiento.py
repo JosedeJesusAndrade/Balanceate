@@ -63,10 +63,10 @@ def movimiento(movement: str, name: str, date: str, value: str) -> rx.Component:
             align_items="center",
         ),
         bg="white",
-        padding="20px",  # Aumentado de 16px a 20px (+25%)
+        padding="30px",  # Aumentado de 16px a 20px (+25%)
         border_radius="15px",
-        width="100%",
-        max_width="600px",
+        width=["90%", "85%", "100%"],  # 90% en móvil, 85% en tablet, 100% en desktop
+        max_width="800px",
         margin_x="auto",
         box_shadow="rgba(0, 0, 0, 0.08) 0px 4px 12px",
     )

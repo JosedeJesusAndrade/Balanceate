@@ -14,6 +14,17 @@ from Balanceate.view.test_localstorage import test_localstorage_page
 from Balanceate.styles import styles
 from rxconfig import config
 
+# Configuración optimizada para Reflex 0.8.23
+app = rx.App(
+    stylesheets=styles.STYLESHEETS,
+    style=styles.BASE_STYLE,
+    theme=rx.theme(
+        appearance="light",  # Forzar modo claro
+        has_background=True,
+        radius="large",
+        accent_color="indigo",
+    )
+)
 
 
 def index() -> rx.Component:
@@ -21,58 +32,47 @@ def index() -> rx.Component:
         ~State.usuario_actual,
         login(),
         rx.box(
-            # Navbar fijo en la parte superior
-            navbar(),
             
             # Contenido principal
             rx.box(
                 rx.vstack(
                     # Balance principal
-                    rx.container(
+                    rx.box(
                         balance(),
                         padding_y=["1em", "1.5em", "2em"],
-                        size="4",  # máx 1136px - apropiado para el contenido principal
-                        center_content=True
+                        width="100%",
                     ),
 
                     # Agregar movimiento
-                    rx.container(
+                    rx.box(
                         agregar_movimiento(),
-                        size="3",  # máx 880px - mejor para formularios
-                        center_content=True
+                        width="100%",
+                        padding_y=["1em", "1.5em", "2em"],
                     ),
 
                     # Lista de movimientos
-                    rx.container(
+                    rx.box(
                         movimientos(),
-                        size="4",  # máx 1136px - apropiado para tablas/listas
-                        center_content=True
+                        width="100%",
                     ),
                     
                     align_items="center",
                     justify="center",
                     spacing="0",  # Sin espacio extra entre secciones
                     width="100%",
-                    padding_top=["140px", "130px", "180px"]  # Más espacio para navbar fijo
                 ),
                 width="100%",
                 min_height="100vh",
             ),
             
             # Footer en la parte inferior
-            footer(),
+            # footer(),
             
             # Propiedades del contenedor principal
             width="100%",
             min_height="100vh",
         )
     )
- # Configuración mejorada para Reflex 0.8.13
-# Configuración optimizada para Reflex 0.8.13
-app = rx.App(
-    stylesheets=styles.STYLESHEETS,
-    style=styles.BASE_STYLE,
-)
 
 # Agregar las páginas a la aplicación
 app.add_page(

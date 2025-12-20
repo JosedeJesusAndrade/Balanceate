@@ -7,3 +7,5 @@ class Colors(Enum):
     SUCCESS = "#28a745"
     ERROR = "#dc3545"
     WARNING = "#ffc107"
+
+    BACKGROUND = "#FFFFFC"

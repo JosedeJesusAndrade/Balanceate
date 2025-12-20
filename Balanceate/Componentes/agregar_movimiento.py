@@ -2,22 +2,23 @@ import reflex as rx
 from Balanceate.state import State
 from Balanceate.styles.colors import Colors
 from Balanceate.styles.fonts import Font, FontWeight
+from Balanceate.styles.styles import Size
 
 def agregar_movimiento() -> rx.Component:
     return rx.vstack(
         rx.heading(
             "Agregar movimiento",
-            size="2",  # Tamaño mediano para subtítulos
+            size="3",
             color="black",
-            margin_bottom="4"
+            margin_bottom="5",
+            font_family=Font.DEFAULT.value,
         ),
 
-        rx.flex(
+        rx.hstack(
             rx.input(
                 placeholder="Nombre",
                 value=State.nombre,
                 on_change=State.set_nombre,
-                flex="3",  # Ocupa más espacio que el input de valor
                 padding="3",
                 border_radius="md",
                 border=f"1px solid {Colors.SECONDARY.value}",
@@ -34,7 +35,6 @@ def agregar_movimiento() -> rx.Component:
                 type_="number",
                 value=State.valor,
                 on_change=State.set_valor,
-                flex="2",  # Proporción respecto al input de nombre
                 padding="3",
                 border_radius="md",
                 border=f"1px solid {Colors.SECONDARY.value}",
@@ -48,7 +48,8 @@ def agregar_movimiento() -> rx.Component:
             ),
 
             spacing="3",
-            justify="center"
+            justify="center",
+            width=["87%","90%","60%"] 
         ),
 
         rx.hstack(
@@ -58,7 +59,7 @@ def agregar_movimiento() -> rx.Component:
                 bg=Colors.SUCCESS.value,
                 color="white",
                 border_radius="8px",
-                size="2",  # En Reflex 0.7.8, los tamaños van del 1 al 4
+                size="3",  
                 padding="3"
             ),
             rx.button(
@@ -67,7 +68,7 @@ def agregar_movimiento() -> rx.Component:
                 bg=Colors.ERROR.value,
                 color="white",
                 border_radius="8px",
-                size="2",  # En Reflex 0.7.8, los tamaños van del 1 al 4
+                size="3", 
                 padding="3"
             ),
             spacing="4"
@@ -75,5 +76,6 @@ def agregar_movimiento() -> rx.Component:
 
         spacing="4",
         align="center",
-        width="100%"
+        width="100%",
+        margin_bottom=Size.MEDIUM.value
     )

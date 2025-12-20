@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import bcrypt
 from jwt import encode, decode
+from pydantic import BaseModel
 from Balanceate.db.db import movimientos_collection, balances_collection, usuarios_collection
 
 # Nueva clase AppState con persistencia usando rx.LocalStorage
@@ -24,12 +25,12 @@ load_dotenv()  # Cargar variables de entorno desde .env
 JWT_SECRET = os.getenv("JWT_SECRET", "tu_clave_secreta_aqui")  
 JWT_EXPIRES_IN = timedelta(days=int(os.getenv("JWT_EXPIRES_DAYS", 7)))  # Token válido por 7 días
 
-class Usuario(rx.Base):
+class Usuario(BaseModel):
     id: str
     nombre: str
     email: str
 
-class Movimiento(rx.Base):
+class Movimiento(BaseModel):
     tipo: str = ""
     nombre: str = ""
     fecha: str = ""  # Solo hora para mostrar (HH:MM:SS)
@@ -37,7 +38,12 @@ class Movimiento(rx.Base):
     valor: float = 0.0
     usuario_id: str = ""
 
-class Balance(rx.Base):
+class GrupoMovimientos(BaseModel):
+    """Grupo de movimientos organizados por fecha."""
+    etiqueta: str = ""  # "Hoy", "Ayer" o "DD/MM/YYYY"
+    movimientos: list[Movimiento] = []
+
+class Balance(BaseModel):
     usuario_id: str = ""
     total: float = 0.0
     ultima_actualizacion: str = ""
@@ -75,34 +81,9 @@ class State(AppState):
     # Estado de la aplicación
     balance: Balance = Balance(usuario_id="", total=0.0, ultima_actualizacion=datetime.now().isoformat())
     movimientos: list[Movimiento] = []
+    movimientos_agrupados: list[GrupoMovimientos] = []  # Lista de grupos pre-procesada
     nombre: str = ""
     valor: float = 0.0
-
-    @rx.var
-    def movimientos_agrupados(self) -> dict[str, list[Movimiento]]:
-        """Agrupa los movimientos por fecha con etiquetas 'Hoy', 'Ayer' o fecha específica."""
-        from collections import defaultdict
-        grupos = defaultdict(list)
-        
-        hoy = datetime.now().date()
-        ayer = (datetime.now() - timedelta(days=1)).date()
-        
-        for mov in self.movimientos:
-            try:
-                fecha_obj = datetime.fromisoformat(mov.fecha_completa).date()
-                
-                if fecha_obj == hoy:
-                    etiqueta = "Hoy"
-                elif fecha_obj == ayer:
-                    etiqueta = "Ayer"
-                else:
-                    etiqueta = fecha_obj.strftime("%d/%m/%Y")
-                
-                grupos[etiqueta].append(mov)
-            except:
-                grupos["Sin fecha"].append(mov)
-        
-        return dict(grupos)
 
     def set_valor(self, value: str):
         """Recibe el valor como string desde el input, intenta convertir a float."""
@@ -228,6 +209,40 @@ class State(AppState):
                     balance_total -= valor
             except (ValueError, TypeError):
                 continue
+        
+        # Agrupar movimientos por fecha (pre-procesamiento para evitar @rx.var)
+        self.movimientos_agrupados = []
+        if self.movimientos:
+            hoy = datetime.now().date()
+            ayer = hoy - timedelta(days=1)
+            grupos_dict = {}
+            
+            for mov in self.movimientos:
+                try:
+                    fecha_obj = datetime.fromisoformat(mov.fecha_completa).date()
+                    
+                    # Determinar etiqueta
+                    if fecha_obj == hoy:
+                        etiqueta = "Hoy"
+                    elif fecha_obj == ayer:
+                        etiqueta = "Ayer"
+                    else:
+                        etiqueta = fecha_obj.strftime("%d/%m/%Y")
+                    
+                    if etiqueta not in grupos_dict:
+                        grupos_dict[etiqueta] = []
+                    grupos_dict[etiqueta].append(mov)
+                except:
+                    # Si hay error al parsear, agrupar como "Fecha desconocida"
+                    if "Fecha desconocida" not in grupos_dict:
+                        grupos_dict["Fecha desconocida"] = []
+                    grupos_dict["Fecha desconocida"].append(mov)
+            
+            # Convertir dict a lista de GrupoMovimientos
+            for etiqueta, movs in grupos_dict.items():
+                self.movimientos_agrupados.append(
+                    GrupoMovimientos(etiqueta=etiqueta, movimientos=movs)
+                )
         
         # Asegurarnos de que el balance total sea un número válido
         if not isinstance(balance_total, (int, float)):

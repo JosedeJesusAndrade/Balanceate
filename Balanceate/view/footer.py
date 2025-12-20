@@ -9,14 +9,14 @@ def footer() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.button(
-                    "Dia", size="3", 
+                    "Inicio", size="3", 
                     color=Colors.PRIMARY.value, 
                     min_width=["60px", "80px", "100px"], 
                     flex_grow=1,
                     height="48px",
                 ),
                 rx.button(
-                    "Mensual", size="3", 
+                    "Reportes", size="3", 
                     color=Colors.PRIMARY.value, 
                     min_width=["60px", "80px", "100px"], 
                     flex_grow=1,
@@ -24,6 +24,13 @@ def footer() -> rx.Component:
                 ),
                 rx.button(
                     "Anual", size="3", 
+                    color=Colors.PRIMARY.value, 
+                    min_width=["60px", "80px", "100px"], 
+                    flex_grow=1,
+                    height="48px",
+                ),
+                rx.button(
+                    "Configuración", size="3", 
                     color=Colors.PRIMARY.value, 
                     min_width=["60px", "80px", "100px"], 
                     flex_grow=1,
