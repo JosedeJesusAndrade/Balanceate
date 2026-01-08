@@ -40,8 +40,16 @@ def movimientos() -> rx.Component:
                         value=rx.cond(
                             m.tipo == "ingreso",
                             f"+${m.valor}",
-                            f"-${m.valor}"
-                        )
+                            rx.cond(
+                                m.tipo == "deuda",
+                                f"${m.monto_total} ({m.plazo} meses)",
+                                f"-${m.valor}"
+                            )
+                        ),
+                        tipo=m.tipo,
+                        monto_total=m.monto_total,
+                        mensualidad=m.mensualidad,
+                        plazo=m.plazo
                     )
                 ),
                 width="100%",

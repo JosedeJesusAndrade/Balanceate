@@ -22,7 +22,10 @@ class AppState(rx.State):
 load_dotenv()  # Cargar variables de entorno desde .env
 
 # Configuración de JWT
-JWT_SECRET = os.getenv("JWT_SECRET", "tu_clave_secreta_aqui")  
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise ValueError("JWT_SECRET debe estar definido en las variables de entorno")
+
 JWT_EXPIRES_IN = timedelta(days=int(os.getenv("JWT_EXPIRES_DAYS", 7)))  # Token válido por 7 días
 
 class Usuario(BaseModel):
@@ -31,12 +34,16 @@ class Usuario(BaseModel):
     email: str
 
 class Movimiento(BaseModel):
-    tipo: str = ""
+    tipo: str = ""  # "ingreso", "gasto", "deuda"
     nombre: str = ""
     fecha: str = ""  # Solo hora para mostrar (HH:MM:SS)
     fecha_completa: str = ""  # Fecha completa ISO para agrupar
     valor: float = 0.0
     usuario_id: str = ""
+    # Campos adicionales para deudas
+    monto_total: float = 0.0  # Monto total de la deuda
+    mensualidad: float = 0.0  # Pago mensual
+    plazo: int = 0  # Plazo en meses
 
 class GrupoMovimientos(BaseModel):
     """Grupo de movimientos organizados por fecha."""
@@ -45,8 +52,12 @@ class GrupoMovimientos(BaseModel):
 
 class Balance(BaseModel):
     usuario_id: str = ""
-    total: float = 0.0
+    total: float = 0.0  # Balance visible actual (disponible)
     ultima_actualizacion: str = ""
+    # Campos para balance expandido (futuro)
+    disponible: float = 0.0  # ingresos - gastos pagados
+    deudas_pendientes: float = 0.0  # suma de montos totales de deudas activas
+    balance_real: float = 0.0  # disponible - deudas_pendientes
 
 class State(AppState):
     """Estado global de la aplicación que extiende AppState para persistencia."""
@@ -84,6 +95,28 @@ class State(AppState):
     movimientos_agrupados: list[GrupoMovimientos] = []  # Lista de grupos pre-procesada
     nombre: str = ""
     valor: float = 0.0
+    
+    # Control de formularios dinámicos
+    tipo_seleccionado: str = ""  # "ingreso", "gasto", "deuda" o "" para ninguno
+    
+    # Campos adicionales para deudas
+    monto_total: float = 0.0
+    mensualidad: float = 0.0
+    plazo: int = 0
+
+    def seleccionar_tipo(self, tipo: str):
+        """Selecciona el tipo de movimiento y muestra el formulario correspondiente."""
+        if self.tipo_seleccionado == tipo:
+            # Si ya está seleccionado, lo deselecciona (toggle)
+            self.tipo_seleccionado = ""
+        else:
+            self.tipo_seleccionado = tipo
+            # Limpiar campos al cambiar de tipo
+            self.nombre = ""
+            self.valor = 0.0
+            self.monto_total = 0.0
+            self.mensualidad = 0.0
+            self.plazo = 0
 
     def set_valor(self, value: str):
         """Recibe el valor como string desde el input, intenta convertir a float."""
@@ -91,6 +124,27 @@ class State(AppState):
             self.valor = float(value)
         except (ValueError, TypeError):
             self.valor = 0.0
+    
+    def set_monto_total(self, value: str):
+        """Recibe el monto total como string desde el input."""
+        try:
+            self.monto_total = float(value)
+        except (ValueError, TypeError):
+            self.monto_total = 0.0
+    
+    def set_mensualidad(self, value: str):
+        """Recibe la mensualidad como string desde el input."""
+        try:
+            self.mensualidad = float(value)
+        except (ValueError, TypeError):
+            self.mensualidad = 0.0
+    
+    def set_plazo(self, value: str):
+        """Recibe el plazo como string desde el input."""
+        try:
+            self.plazo = int(value)
+        except (ValueError, TypeError):
+            self.plazo = 0
 
     def actualizar_balance(self, valor: float, tipo: str):
         """Actualiza el balance según el tipo de movimiento."""
@@ -99,21 +153,28 @@ class State(AppState):
             self.balance = Balance(
                 usuario_id=self.usuario_actual.id if self.usuario_actual else "",
                 total=0.0,
-                ultima_actualizacion=datetime.now().isoformat()
+                ultima_actualizacion=datetime.now().isoformat(),
+                disponible=0.0,
+                deudas_pendientes=0.0,
+                balance_real=0.0
             )
         
-        # Actualizar el total
+        # Actualizar el total y disponible
         nuevo_total = self.balance.total
         if tipo == "ingreso":
             nuevo_total += float(valor)
-        else:
+        elif tipo == "gasto":
             nuevo_total -= float(valor)
+        # Para deudas, no afectan el balance disponible inmediatamente
             
         # Crear un nuevo objeto Balance con el total actualizado
         self.balance = Balance(
             usuario_id=self.usuario_actual.id,
             total=float(nuevo_total),
-            ultima_actualizacion=datetime.now().isoformat()
+            ultima_actualizacion=datetime.now().isoformat(),
+            disponible=float(nuevo_total),
+            deudas_pendientes=self.balance.deudas_pendientes,
+            balance_real=float(nuevo_total) - self.balance.deudas_pendientes
         )
         
         # Actualizar en la base de datos
@@ -130,36 +191,59 @@ class State(AppState):
 
     def agregar_movimiento(self, tipo: str):
         """Agrega un nuevo movimiento y actualiza el balance."""
-        if not self.nombre or self.valor <= 0 or not self.usuario_actual:
+        if not self.nombre or not self.usuario_actual:
             return
+        
+        # Validaciones específicas por tipo
+        if tipo in ["ingreso", "gasto"]:
+            if self.valor <= 0:
+                return
+        elif tipo == "deuda":
+            if self.monto_total <= 0 or self.mensualidad <= 0 or self.plazo <= 0:
+                return
             
         try:
-            valor = float(self.valor)
-            
             # Crear nuevo movimiento
             nuevo_movimiento = {
                 "tipo": tipo,
                 "nombre": self.nombre,
                 "fecha": datetime.now().isoformat(),
-                "valor": valor,
                 "usuario_id": self.usuario_actual.id
             }
+            
+            # Agregar campos según el tipo
+            if tipo in ["ingreso", "gasto"]:
+                valor = float(self.valor)
+                nuevo_movimiento["valor"] = valor
+                nuevo_movimiento["monto_total"] = 0.0
+                nuevo_movimiento["mensualidad"] = 0.0
+                nuevo_movimiento["plazo"] = 0
+            elif tipo == "deuda":
+                nuevo_movimiento["valor"] = float(self.mensualidad)  # Para compatibilidad en visualización
+                nuevo_movimiento["monto_total"] = float(self.monto_total)
+                nuevo_movimiento["mensualidad"] = float(self.mensualidad)
+                nuevo_movimiento["plazo"] = int(self.plazo)
             
             # Guardar en la base de datos
             movimientos_collection.insert_one(nuevo_movimiento)
             
-            # Actualizar el balance
-            self.actualizar_balance(valor, tipo)
+            # Actualizar el balance (solo para ingreso/gasto)
+            if tipo in ["ingreso", "gasto"]:
+                self.actualizar_balance(float(self.valor), tipo)
             
             # Limpiar campos
             self.nombre = ""
             self.valor = 0.0
+            self.monto_total = 0.0
+            self.mensualidad = 0.0
+            self.plazo = 0
+            self.tipo_seleccionado = ""  # Ocultar formulario
             
             # Recargar movimientos
             self.cargar_movimientos()
             
-        except (ValueError, TypeError):
-            self.error_mensaje = "El valor ingresado no es válido"
+        except (ValueError, TypeError) as e:
+            self.error_mensaje = f"Error al agregar movimiento: {str(e)}"
 
     def cargar_movimientos(self):
         """Carga datos desde MongoDB y actualiza balance."""
@@ -192,6 +276,12 @@ class State(AppState):
                     valor = 0.0
                     
                 valor_formateado = round(float(valor), 2)
+                
+                # Cargar campos adicionales para deudas
+                monto_total = float(doc.get("monto_total", 0.0))
+                mensualidad = float(doc.get("mensualidad", 0.0))
+                plazo = int(doc.get("plazo", 0))
+                
                 self.movimientos.append(
                     Movimiento(
                         tipo=tipo,
@@ -199,14 +289,18 @@ class State(AppState):
                         fecha=hora_formateada,  # Solo hora para mostrar
                         fecha_completa=fecha,  # Fecha completa ISO para agrupar
                         valor=str(valor_formateado),  # Convertimos a string para evitar problemas de formato
-                        usuario_id=usuario_id
+                        usuario_id=usuario_id,
+                        monto_total=monto_total,
+                        mensualidad=mensualidad,
+                        plazo=plazo
                     )
                 )
                 
                 if tipo == "ingreso":
                     balance_total += valor
-                else:
+                elif tipo == "gasto":
                     balance_total -= valor
+                # Las deudas no afectan el balance disponible aquí
             except (ValueError, TypeError):
                 continue
         
@@ -244,15 +338,29 @@ class State(AppState):
                     GrupoMovimientos(etiqueta=etiqueta, movimientos=movs)
                 )
         
+        # Calcular deudas pendientes (suma de montos totales de deudas)
+        deudas_pendientes = 0.0
+        for doc in docs:
+            if doc.get("tipo") == "deuda":
+                monto_total = float(doc.get("monto_total", 0))
+                deudas_pendientes += monto_total
+        
         # Asegurarnos de que el balance total sea un número válido
         if not isinstance(balance_total, (int, float)):
             balance_total = 0.0
             
+        # Calcular los 3 tipos de balance
+        disponible = float(balance_total)
+        balance_real = disponible - deudas_pendientes
+            
         # Actualizar el balance como objeto Balance
         self.balance = Balance(
             usuario_id=self.usuario_actual.id if self.usuario_actual else "",
-            total=float(balance_total),
-            ultima_actualizacion=datetime.now().isoformat()
+            total=float(balance_total),  # Mantener compatible con UI actual
+            ultima_actualizacion=datetime.now().isoformat(),
+            disponible=disponible,
+            deudas_pendientes=deudas_pendientes,
+            balance_real=balance_real
         )
 
 
