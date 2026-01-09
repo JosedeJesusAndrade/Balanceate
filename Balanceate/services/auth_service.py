@@ -53,6 +53,29 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
-def verificar_password(password: str, password_hash: str) -> bool:
-
-    return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+def verificar_password(password: str, password_hash: str | bytes) -> bool:
+    """
+    Verifica si una contraseña coincide con su hash.
+    
+    Args:
+        password: Contraseña en texto plano
+        password_hash: Hash de la contraseña (puede venir como str o bytes desde MongoDB)
+        
+    Returns:
+        True si la contraseña coincide, False en caso contrario
+    """
+    try:
+        # Convertir password a bytes
+        password_bytes = password.encode('utf-8')
+        
+        # Si password_hash ya es bytes, usarlo directamente
+        # Si es string, convertirlo a bytes
+        if isinstance(password_hash, str):
+            password_hash_bytes = password_hash.encode('utf-8')
+        else:
+            password_hash_bytes = password_hash
+        
+        return bcrypt.checkpw(password_bytes, password_hash_bytes)
+    except Exception as e:
+        print(f"Error en verificar_password: {str(e)}")
+        return False
