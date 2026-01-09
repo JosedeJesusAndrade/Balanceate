@@ -96,8 +96,18 @@ def agregar_movimiento() -> rx.Component:
         rx.cond(
             (State.tipo_seleccionado == "ingreso") | (State.tipo_seleccionado == "gasto"),
             rx.vstack(
+                # Campo Nombre
+                rx.text(
+                    "Nombre del movimiento",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Nombre",
+                    placeholder="Ej: Salario, Cena, Transporte",
                     value=State.nombre,
                     on_change=State.set_nombre,
                     padding="3",
@@ -111,8 +121,19 @@ def agregar_movimiento() -> rx.Component:
                         "border_color": Colors.SUCCESS.value
                     },
                 ),
+                # Campo Valor
+                rx.text(
+                    "Valor",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_top="10px",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Valor",
+                    placeholder="Cantidad en dólares",
                     type_="number",
                     value=State.valor,
                     on_change=State.set_valor,
@@ -162,8 +183,18 @@ def agregar_movimiento() -> rx.Component:
         rx.cond(
             State.tipo_seleccionado == "deuda",
             rx.vstack(
+                # Campo Nombre
+                rx.text(
+                    "Nombre de la deuda",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Nombre de la deuda",
+                    placeholder="Ej: Préstamo personal, Tarjeta de crédito",
                     value=State.nombre,
                     on_change=State.set_nombre,
                     padding="3",
@@ -177,8 +208,19 @@ def agregar_movimiento() -> rx.Component:
                         "border_color": Colors.WARNING.value
                     },
                 ),
+                # Campo Monto Total
+                rx.text(
+                    "Monto total",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_top="10px",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Monto total",
+                    placeholder="Cantidad total adeudada",
                     type_="number",
                     value=State.monto_total,
                     on_change=State.set_monto_total,
@@ -193,8 +235,19 @@ def agregar_movimiento() -> rx.Component:
                         "border_color": Colors.WARNING.value
                     },
                 ),
+                # Campo Mensualidad
+                rx.text(
+                    "Pago mensual",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_top="10px",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Mensualidad",
+                    placeholder="Cuota mensual a pagar",
                     type_="number",
                     value=State.mensualidad,
                     on_change=State.set_mensualidad,
@@ -209,8 +262,19 @@ def agregar_movimiento() -> rx.Component:
                         "border_color": Colors.WARNING.value
                     },
                 ),
+                # Campo Plazo
+                rx.text(
+                    "Plazo",
+                    font_size="0.9rem",
+                    font_weight="600",
+                    color="#374151",
+                    margin_top="10px",
+                    margin_bottom="1px",
+                    text_align="left",
+                    width="100%"
+                ),
                 rx.input(
-                    placeholder="Plazo (meses)",
+                    placeholder="Número de meses",
                     type_="number",
                     value=State.plazo,
                     on_change=State.set_plazo,

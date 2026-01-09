@@ -11,7 +11,11 @@ def navbar(page_title: str = "Mi Billetera") -> rx.Component:
                 rx.cond(
                     State.usuario_actual,
                     rx.avatar(
-                        name=State.usuario_actual.nombre,
+                        name=rx.cond(
+                            State.usuario_actual,
+                            State.usuario_actual.nombre,
+                            "Usuario"
+                        ),
                         size="6",
                         radius="full"
                     ),
