@@ -2,10 +2,11 @@ import os
 import reflex as rx
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from Balanceate.db.db import movimientos_collection, balances_collection
 from Balanceate.db.usuario_repository import UsuarioRepository
+from Balanceate.db.movimiento_repository import MovimientoRepository
+from Balanceate.db.balance_repository import BalanceRepository
 from Balanceate.models import Usuario, Movimiento, GrupoMovimientos, Balance
-from Balanceate.services import auth_service, movimiento_service
+from Balanceate.services import auth_service, movimiento_service, balance_service, validacion_service
 
 # Nueva clase AppState con persistencia usando rx.LocalStorage
 class AppState(rx.State):
@@ -46,7 +47,7 @@ class State(AppState):
                 print("✅ Sesión restaurada exitosamente")  # Debug
             else:
                 print("❌ Token inválido, limpiando localStorage...")  # Debug
-                # Token iauth_serviceido, limpiar localStorage
+                # Token inválido, limpiar localStorage
                 self.auth_token = ""
         else:
             print("ℹ️ No hay token en localStorage")  # Debug
@@ -108,47 +109,43 @@ class State(AppState):
         except (ValueError, TypeError):
             self.plazo = 0
 
+    def _cargar_balance_usuario(self, usuario_id: str):
+        """
+        Helper privado para cargar el balance de un usuario.
+        Evita duplicación de código entre login y cargar_usuario_por_id.
+        """
+        balance_doc = BalanceRepository.obtener_balance_por_usuario(usuario_id)
+        if balance_doc:
+            self.balance = Balance(
+                usuario_id=usuario_id,
+                total=float(balance_doc["total"]),
+                ultima_actualizacion=balance_doc["ultima_actualizacion"]
+            )
+            print(f"💰 Balance cargado: ${balance_doc['total']}")  # Debug
+        else:
+            self.balance = balance_service.crear_balance_inicial(usuario_id)
+            print("💰 Balance inicial creado")  # Debug
+
     def actualizar_balance(self, valor: float, tipo: str):
-        """Actualiza el balance según el tipo de movimiento."""
+        """Actualiza el balance según el tipo de movimiento usando el servicio."""
         # Asegurarse de que self.balance sea un objeto Balance
         if not isinstance(self.balance, Balance):
-            self.balance = Balance(
-                usuario_id=self.usuario_actual.id if self.usuario_actual else "",
-                total=0.0,
-                ultima_actualizacion=datetime.now().isoformat(),
-                disponible=0.0,
-                deudas_pendientes=0.0,
-                balance_real=0.0
+            self.balance = balance_service.crear_balance_inicial(
+                self.usuario_actual.id if self.usuario_actual else ""
             )
         
-        # Actualizar el total y disponible
-        nuevo_total = self.balance.total
-        if tipo == "ingreso":
-            nuevo_total += float(valor)
-        elif tipo == "gasto":
-            nuevo_total -= float(valor)
-        # Para deudas, no afectan el balance disponible inmediatamente
-            
-        # Crear un nuevo objeto Balance con el total actualizado
-        self.balance = Balance(
-            usuario_id=self.usuario_actual.id,
-            total=float(nuevo_total),
-            ultima_actualizacion=datetime.now().isoformat(),
-            disponible=float(nuevo_total),
-            deudas_pendientes=self.balance.deudas_pendientes,
-            balance_real=float(nuevo_total) - self.balance.deudas_pendientes
+        # Usar el servicio para actualizar incrementalmente
+        self.balance = balance_service.actualizar_balance_incremental(
+            self.balance, valor, tipo
         )
         
         # Actualizar en la base de datos
-        balances_collection.update_one(
-            {"usuario_id": self.usuario_actual.id},
+        BalanceRepository.actualizar_balance_por_usuario(
+            self.usuario_actual.id,
             {
-                "$set": {
-                    "total": self.balance.total,
-                    "ultima_actualizacion": self.balance.ultima_actualizacion
-                }
-            },
-            upsert=True
+                "total": self.balance.total,
+                "ultima_actualizacion": self.balance.ultima_actualizacion
+            }
         )
 
     def agregar_movimiento(self, tipo: str):
@@ -171,29 +168,19 @@ class State(AppState):
             return
             
         try:
-            # Crear nuevo movimiento
-            nuevo_movimiento = {
-                "tipo": tipo,
-                "nombre": self.nombre,
-                "fecha": datetime.now().isoformat(),
-                "usuario_id": self.usuario_actual.id
-            }
-            
-            # Agregar campos según el tipo
-            if tipo in ["ingreso", "gasto"]:
-                valor = float(self.valor)
-                nuevo_movimiento["valor"] = valor
-                nuevo_movimiento["monto_total"] = 0.0
-                nuevo_movimiento["mensualidad"] = 0.0
-                nuevo_movimiento["plazo"] = 0
-            elif tipo == "deuda":
-                nuevo_movimiento["valor"] = float(self.mensualidad)  # Para compatibilidad en visualización
-                nuevo_movimiento["monto_total"] = float(self.monto_total)
-                nuevo_movimiento["mensualidad"] = float(self.mensualidad)
-                nuevo_movimiento["plazo"] = int(self.plazo)
+            # Construir el movimiento usando el servicio
+            nuevo_movimiento = movimiento_service.construir_movimiento(
+                tipo=tipo,
+                nombre=self.nombre,
+                usuario_id=self.usuario_actual.id,
+                valor=self.valor,
+                monto_total=self.monto_total,
+                mensualidad=self.mensualidad,
+                plazo=self.plazo
+            )
             
             # Guardar en la base de datos
-            movimientos_collection.insert_one(nuevo_movimiento)
+            MovimientoRepository.crear_movimiento(nuevo_movimiento)
             
             # Actualizar el balance (solo para ingreso/gasto)
             if tipo in ["ingreso", "gasto"]:
@@ -215,12 +202,11 @@ class State(AppState):
 
     def cargar_movimientos(self):
         """Carga datos desde MongoDB y actualiza balance."""
-        query = {}
-        if self.usuario_actual:
-            query["usuario_id"] = self.usuario_actual.id
-            
         # Limitar los resultados para mejorar performance
-        docs = list(movimientos_collection.find(query).sort("fecha", -1).limit(100))
+        docs = MovimientoRepository.buscar_movimientos_por_usuario(
+            self.usuario_actual.id if self.usuario_actual else "",
+            limit=100
+        )
         
         # Convertir documentos a objetos Movimiento usando el servicio
         self.movimientos = movimiento_service.convertir_documentos_a_movimientos(docs)
@@ -228,8 +214,8 @@ class State(AppState):
         # Agrupar movimientos por fecha usando el servicio
         self.movimientos_agrupados = movimiento_service.agrupar_movimientos_por_fecha(self.movimientos)
         
-        # Calcular balance usando el servicio
-        self.balance = movimiento_service.calcular_balance_desde_documentos(
+        # Calcular balance usando el servicio de balances
+        self.balance = balance_service.calcular_balance_completo(
             docs, 
             self.usuario_actual.id if self.usuario_actual else ""
         )
@@ -258,19 +244,15 @@ class State(AppState):
         
         async with self:
             try:
-                # Validación de campos
-                if not self.email_registro or not self.password_registro or not self.nombre_registro:
-                    self.error_mensaje = "Todos los campos son requeridos"
-                    return
-
-                # Validación básica de email
-                if "@" not in self.email_registro or "." not in self.email_registro:
-                    self.error_mensaje = "Por favor ingresa un email válido"
-                    return
-
-                # Validación de longitud de contraseña
-                if len(self.password_registro) < 6:
-                    self.error_mensaje = "La contraseña debe tener al menos 6 caracteres"
+                # Validar campos usando el servicio
+                validacion = validacion_service.validar_registro(
+                    email=self.email_registro,
+                    password=self.password_registro,
+                    nombre=self.nombre_registro
+                )
+                
+                if not validacion.es_valido:
+                    self.error_mensaje = validacion.mensaje_error
                     return
                     
                 print(f"Registrando nuevo usuario: {self.email_registro}")  # Debug
@@ -279,19 +261,23 @@ class State(AppState):
                     # Hash de la contraseña usando el servicio
                     hashed_password = auth_service.hash_password(self.password_registro)
                     
+                    # Normalizar datos antes de guardar
+                    email_normalizado = validacion_service.normalizar_email(self.email_registro)
+                    nombre_normalizado = validacion_service.normalizar_nombre(self.nombre_registro)
+                    
                     # Crear usuario usando el repository
                     usuario_id = UsuarioRepository.crear(
-                        email=self.email_registro,
+                        email=email_normalizado,
                         password_hash=hashed_password,
-                        nombre=self.nombre_registro
+                        nombre=nombre_normalizado
                     )
                     print(f"Usuario creado con ID: {usuario_id}")  # Debug
                     
                     # Crear usuario en el estado
                     self.usuario_actual = Usuario(
                         id=usuario_id,
-                        email=self.email_registro.lower().strip(),
-                        nombre=self.nombre_registro.strip()
+                        email=email_normalizado,
+                        nombre=nombre_normalizado
                     )
                     
                     # Guardar sesión
@@ -309,16 +295,10 @@ class State(AppState):
                             "ultima_actualizacion": datetime.now().isoformat()
                         }
                         
-                        resultado_balance = balances_collection.insert_one(balance_inicial)
-                        if not resultado_balance.inserted_id:
-                            raise Exception("No se pudo crear el balance inicial")
+                        BalanceRepository.crear_balance_inicial(balance_inicial)
                         
                         # Actualizar el balance en el estado
-                        self.balance = Balance(
-                            usuario_id=usuario_id,
-                            total=0.0,
-                            ultima_actualizacion=datetime.now().isoformat()
-                        )
+                        self.balance = balance_service.crear_balance_inicial(usuario_id)
                     except Exception as e:
                         print(f"Error al crear balance: {str(e)}")
                         raise Exception("Error al crear el balance inicial")
@@ -339,7 +319,7 @@ class State(AppState):
                     if usuario_id:
                         try:
                             UsuarioRepository.eliminar(usuario_id)
-                            balances_collection.delete_one({"usuario_id": usuario_id})
+                            BalanceRepository.eliminar_balance_por_usuario(usuario_id)
                         except:
                             pass
                     raise e
@@ -354,8 +334,14 @@ class State(AppState):
         print("Iniciando proceso de login...")  # Debug
         
         async with self:
-            if not self.email_login or not self.password_login:
-                self.error_mensaje = "Email y contraseña son requeridos"
+            # Validar campos usando el servicio
+            validacion = validacion_service.validar_login(
+                email=self.email_login,
+                password=self.password_login
+            )
+            
+            if not validacion.es_valido:
+                self.error_mensaje = validacion.mensaje_error
                 return
 
             try:
@@ -387,21 +373,8 @@ class State(AppState):
                 # Guardar el token en localStorage
                 self.guardar_sesion(str(usuario["_id"]))
                 
-                # Cargar balance del usuario
-                balance = balances_collection.find_one({"usuario_id": str(usuario["_id"])})
-                if balance:
-                    self.balance = Balance(
-                        usuario_id=str(usuario["_id"]),
-                        total=float(balance["total"]),  # Aseguramos que sea float
-                        ultima_actualizacion=balance["ultima_actualizacion"]
-                    )
-                else:
-                    # Si no existe balance, crear uno nuevo
-                    self.balance = Balance(
-                        usuario_id=str(usuario["_id"]),
-                        total=0.0,
-                        ultima_actualizacion=datetime.now().isoformat()
-                    )
+                # Cargar balance del usuario usando helper
+                self._cargar_balance_usuario(str(usuario["_id"]))
                 
                 # Limpiar campos
                 self.email_login = ""
@@ -438,23 +411,8 @@ class State(AppState):
                     nombre=usuario["nombre"]
                 )
                 
-                # Cargar balance del usuario (igual que en login)
-                balance = balances_collection.find_one({"usuario_id": str(usuario["_id"])})
-                if balance:
-                    self.balance = Balance(
-                        usuario_id=str(usuario["_id"]),
-                        total=float(balance["total"]),
-                        ultima_actualizacion=balance["ultima_actualizacion"]
-                    )
-                    print(f"💰 Balance cargado: ${balance['total']}")  # Debug
-                else:
-                    # Si no existe balance, crear uno nuevo
-                    self.balance = Balance(
-                        usuario_id=str(usuario["_id"]),
-                        total=0.0,
-                        ultima_actualizacion=datetime.now().isoformat()
-                    )
-                    print("💰 Balance inicial creado")  # Debug
+                # Cargar balance del usuario usando helper
+                self._cargar_balance_usuario(str(usuario["_id"]))
                 
                 # Cargar movimientos del usuario
                 self.cargar_movimientos()

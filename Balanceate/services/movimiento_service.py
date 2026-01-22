@@ -270,3 +270,60 @@ def validar_datos_movimiento(
     
     # Todas las validaciones pasaron
     return ResultadoValidacion(True)
+
+
+def construir_movimiento(
+    tipo: str,
+    nombre: str,
+    usuario_id: str,
+    valor: float = 0.0,
+    monto_total: float = 0.0,
+    mensualidad: float = 0.0,
+    plazo: int = 0
+) -> dict:
+    """
+    Construye un diccionario de movimiento listo para guardar en la base de datos.
+    
+    Args:
+        tipo: Tipo de movimiento ("ingreso", "gasto", "deuda")
+        nombre: Nombre/descripción del movimiento
+        usuario_id: ID del usuario propietario
+        valor: Valor del movimiento (para ingreso/gasto)
+        monto_total: Monto total de la deuda
+        mensualidad: Mensualidad de la deuda
+        plazo: Plazo en meses de la deuda
+        
+    Returns:
+        Diccionario con todos los campos necesarios para MongoDB
+        
+    Nota:
+        Esta función NO valida los datos. Se asume que ya fueron validados
+        con validar_datos_movimiento() antes de llamar a esta función.
+        
+    Lógica de negocio:
+        - Para ingreso/gasto: usa 'valor' como campo principal
+        - Para deuda: usa 'mensualidad' como 'valor' (para compatibilidad en visualización)
+        - Todos los movimientos tienen los mismos campos para consistencia
+    """
+    # Campos base que todos los movimientos tienen
+    movimiento = {
+        "tipo": tipo,
+        "nombre": nombre,
+        "fecha": datetime.now().isoformat(),
+        "usuario_id": usuario_id
+    }
+    
+    # Agregar campos específicos según el tipo
+    if tipo in ["ingreso", "gasto"]:
+        movimiento["valor"] = float(valor)
+        movimiento["monto_total"] = 0.0
+        movimiento["mensualidad"] = 0.0
+        movimiento["plazo"] = 0
+    elif tipo == "deuda":
+        # Para deudas, 'valor' guarda la mensualidad para mostrar en la UI
+        movimiento["valor"] = float(mensualidad)
+        movimiento["monto_total"] = float(monto_total)
+        movimiento["mensualidad"] = float(mensualidad)
+        movimiento["plazo"] = int(plazo)
+    
+    return movimiento
