@@ -1,4 +1,4 @@
-# Balanceate.py - Archivo principal optimizado para Reflex 0.8.13
+# Balanceate.py - Archivo principal optimizado para Reflex 0.8.23
 import reflex as rx
 from Balanceate.state import State
 from Balanceate.view.balance import balance
