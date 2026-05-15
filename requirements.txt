@@ -12,6 +12,10 @@ pymongo==4.15.2
 # Modelos de Datos
 pydantic>=2.9.0,<2.11.0
 
+# Telegram Bot Bridge
+python-telegram-bot>=20.0
+nest_asyncio>=1.6.0
+
 # Configuración
 python-dotenv==1.1.1
 
