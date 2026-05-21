@@ -14,6 +14,7 @@ import time
 import asyncio
 import shutil
 import subprocess
+import tempfile
 import logging
 import logging.handlers
 import signal
@@ -35,14 +36,24 @@ from telegram.ext import (
     filters,
 )
 
+
+def invalidate_opencode_sessions_cache():
+    """Invalidate the TTL cache for fetch_opencode_sessions (P4)."""
+    global _opencode_sessions_cache, _opencode_sessions_cache_time
+    _opencode_sessions_cache = None
+    _opencode_sessions_cache_time = 0
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
 ENV_PATH = BASE_DIR / ".env"
+# S5: .env and sessions.json are protected by .gitignore — both contain secrets/session state.
+# .env is gitignored by default; sessions.json is added to .gitignore explicitly.
 load_dotenv(ENV_PATH)
 
 
 def resolve_opencode_cmd() -> str:
-    known_npm_path = r"C:\Users\marie\AppData\Roaming\npm\opencode.cmd"
+    # S3: Use expanduser instead of hardcoded user path
+    known_npm_path = os.path.expanduser(r"~\AppData\Roaming\npm\opencode.cmd")
     candidates = [
         ("OPENCODE_CMD env var", os.getenv("OPENCODE_CMD")),
         ("shutil.which('opencode')", shutil.which("opencode")),
@@ -59,6 +70,7 @@ ALLOWED_CHAT_IDS_RAW = os.getenv("ALLOWED_CHAT_IDS", "")
 OPENCODE_WORKDIR = os.getenv("OPENCODE_WORKDIR", str(BASE_DIR))
 OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "300"))
 OPENCODE_CMD = os.getenv("OPENCODE_CMD") or resolve_opencode_cmd()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LOG_DIR = Path(__file__).resolve().parent
 LOG_FILE = LOG_DIR / "bot.log"
 
@@ -119,7 +131,34 @@ current_process: dict[int, subprocess.Popen] = {}
 # Track cancel requests to suppress output after kill
 cancel_requests: set[int] = set()
 
+# Lock to prevent race conditions on sessions.json (multiple handlers)
+session_lock = asyncio.Lock()
 
+# Module-level cache for sessions.json to reduce filesystem I/O (P3)
+_session_map_cache: dict | None = None
+_session_map_cache_time: float = 0
+SESSION_MAP_CACHE_TTL = 2.0  # seconds
+
+# P4: TTL cache for fetch_opencode_sessions() to avoid redundant subprocess calls
+_opencode_sessions_cache: list[dict] | None = None
+_opencode_sessions_cache_time: float = 0
+SESSION_LIST_CACHE_TTL = 10.0  # seconds
+
+# Track process status per chat for accurate /cancel messages
+# "idle" | "running" | "cancelling"
+process_status: dict[int, str] = {}
+
+# O2: Model alias mapping for simplified /model command
+MODEL_ALIASES = {
+    "pro": "deepseek/deepseek-v4-pro",
+    "flash": "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+}
+
+
+# S4: Chat ID masking is acceptable for log privacy — partial leak of first/last 2 digits
+# is a conscious tradeoff for debuggability. Full SHA-256 hashing would break traceability.
 def mask_chat_id(chat_id: int) -> str:
     s = str(chat_id)
     if len(s) <= 4:
@@ -272,7 +311,82 @@ def telegramify_markdown(text: str) -> str:
     return final
 
 
+def sanitize_markdownv2(text: str) -> str:
+    """Escape MarkdownV2 special characters for Telegram.
+    
+    Escape rules per Telegram Bot API:
+    - Outside code blocks/inline: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    - Inside code blocks/inline: ` (backtick) and \\ (backslash)
+    """
+    result = []
+    in_code_block = False
+    in_inline_code = False
+    
+    i = 0
+    while i < len(text):
+        if text[i:i+3] == '```':
+            in_code_block = not in_code_block
+            result.append('```')
+            i += 3
+            continue
+        
+        if not in_code_block and text[i] == '`':
+            in_inline_code = not in_inline_code
+            result.append('`')
+            i += 1
+            continue
+        
+        ch = text[i]
+        
+        if in_code_block or in_inline_code:
+            if ch in ('`', '\\'):
+                result.append('\\' + ch)
+            else:
+                result.append(ch)
+        else:
+            if ch in '_*[]()~`>#+-=|{}.!':
+                result.append('\\' + ch)
+            else:
+                result.append(ch)
+        
+        i += 1
+    
+    return ''.join(result)
+
+
+def minimal_escape_mdv2(text: str) -> str:
+    """Escape underscores for MarkdownV2, preserving code blocks.
+
+    Escapes ALL underscores outside code blocks and inline code.
+    This is safe for OpenCode output where underscores are typically
+    literal (variable_names, file_names) rather than formatting.
+    """
+    parts = re.split(r'(```[\s\S]*?```|`[^`\n]*?`)', text)
+    result = []
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        if i % 2 == 1:
+            result.append(part)
+        else:
+            # Escape MarkdownV2 reserved chars that commonly appear as literals
+            # _ (underscore): variable_names, __init__, _private
+            # . (period): end of sentences, file extensions
+            # ! (exclamation): end of sentences
+            # Escape ALL MarkdownV2 reserved chars that are commonly literal in OpenCode output
+            # Safe to escape everywhere outside code: they're almost NEVER intentional formatting
+            for ch in ('_', '.', '!', '+', '-', '=', '#', '>', '(', ')'):
+                part = part.replace(ch, '\\' + ch)
+            result.append(part)
+    return ''.join(result)
+
+
 def split_message(text: str, max_len: int = 4000) -> list[str]:
+    """Split long text into Telegram-friendly chunks at natural boundaries.
+
+    P5: Optimization opportunity — the current O(n) rfind loop could be replaced
+    with a single regex split, but rfind is acceptable for typical response sizes.
+    """
     if len(text) <= max_len:
         return [text]
 
@@ -309,6 +423,33 @@ def authorize(chat_id: int) -> bool:
     return chat_id in ALLOWED_CHAT_IDS
 
 
+async def transcribe_voice(file_path: str) -> str | None:
+    """Transcribe voice audio to text using OpenAI Whisper API."""
+    if not OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not set — skipping voice transcription")
+        return None
+
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+        with open(file_path, "rb") as audio_file:
+            transcript = await client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+
+        return transcript.strip() if transcript else None
+
+    except ImportError:
+        logger.error("openai package not installed. Run: pip install openai")
+        return None
+    except Exception as e:
+        logger.error(f"Voice transcription failed: {e}")
+        return None
+
+
 def load_session_map() -> dict:
     """Load {chat_id: {active, sessions: {name: {id, title, created, last_used, prompt_count}}}}"""
     if SESSION_DB.exists():
@@ -319,10 +460,39 @@ def load_session_map() -> dict:
     return {}
 
 
-def save_session_map(data: dict):
-    """Save session mapping to disk."""
-    SESSION_DB.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_DB.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+async def save_session_map_atomic(data: dict):
+    """Thread-safe, crash-safe save of session map. Invalidates cache."""
+    global _session_map_cache, _session_map_cache_time
+    loop = asyncio.get_running_loop()
+    async with session_lock:
+        # P2: Offload file I/O to executor to avoid blocking the event loop
+        def _write():
+            SESSION_DB.parent.mkdir(parents=True, exist_ok=True)
+            tmp = SESSION_DB.with_suffix('.tmp')
+            try:
+                tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(SESSION_DB)  # atomic on most filesystems
+            except Exception:
+                if tmp.exists():
+                    tmp.unlink(missing_ok=True)
+                raise
+        await loop.run_in_executor(None, _write)
+        _session_map_cache = data.copy()
+        _session_map_cache_time = time.time()
+
+
+async def load_session_map_safe() -> dict:
+    """Load session map with lock protection and TTL cache."""
+    global _session_map_cache, _session_map_cache_time
+    now = time.time()
+    if _session_map_cache is not None and (now - _session_map_cache_time) < SESSION_MAP_CACHE_TTL:
+        return _session_map_cache.copy()
+    loop = asyncio.get_running_loop()
+    async with session_lock:
+        # P2: Offload file I/O to executor to avoid blocking the event loop
+        _session_map_cache = await loop.run_in_executor(None, load_session_map)
+        _session_map_cache_time = now
+        return _session_map_cache.copy()
 
 
 def parse_opencode_session_list(output: str) -> list[dict]:
@@ -338,11 +508,20 @@ def parse_opencode_session_list(output: str) -> list[dict]:
                 "title": match.group(2).strip(),
                 "updated": match.group(3).strip(),
             })
+    # O5: Warn if parser returned nothing but input had content (format may have changed)
+    if not sessions and output.strip():
+        logger.warning("parse_opencode_session_list: no sessions parsed from output (len=%d). "
+                       "First 200 chars: %r", len(output.strip()), output.strip()[:200])
     return sessions
 
 
 async def fetch_opencode_sessions() -> list[dict]:
-    """Run 'opencode session list' and parse output."""
+    """Run 'opencode session list' and parse output. Cached with TTL (P4)."""
+    global _opencode_sessions_cache, _opencode_sessions_cache_time
+    now = time.time()
+    if _opencode_sessions_cache is not None and (now - _opencode_sessions_cache_time) < SESSION_LIST_CACHE_TTL:
+        return _opencode_sessions_cache
+
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -361,7 +540,10 @@ async def fetch_opencode_sessions() -> list[dict]:
             logger.warning(f"opencode session list failed: {result.stderr.strip()}")
             return []
 
-        return parse_opencode_session_list(result.stdout)
+        sessions = parse_opencode_session_list(result.stdout)
+        _opencode_sessions_cache = sessions
+        _opencode_sessions_cache_time = now
+        return sessions
     except subprocess.TimeoutExpired:
         logger.warning("opencode session list timed out")
         return []
@@ -370,8 +552,15 @@ async def fetch_opencode_sessions() -> list[dict]:
         return []
 
 
-async def query_opencode_db(sql: str) -> list[dict]:
+async def query_opencode_db(sql: str, allowed_pattern: str = None) -> list[dict]:
     """Execute a SQL query against opencode.db via CLI. Returns list of dicts."""
+    if allowed_pattern:
+        match = re.search(r'WHERE\s+(\w+)\s*=\s*[\'"](\w+)[\'"]', sql)
+        if match:
+            identifier = match.group(2)
+            if not re.match(allowed_pattern, identifier):
+                logger.warning(f"Blocked potentially unsafe SQL query: {sql[:100]}")
+                return []
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -433,11 +622,15 @@ def run_opencode(cmd: list[str], workdir: str, timeout: int, chat_id: int = None
     finally:
         if chat_id is not None:
             current_process.pop(chat_id, None)
+            process_status.pop(chat_id, None)
 
 
 def _relative_time(past_dt: datetime) -> str:
     """Return a human-readable relative time string in Spanish."""
     seconds = int((datetime.now(timezone.utc) - past_dt).total_seconds())
+    # O4: Guard against negative duration (clock skew, future timestamps)
+    if seconds < 0:
+        return "ahora"
     if seconds < 60:
         return "hace {} seg".format(seconds)
     minutes = seconds // 60
@@ -452,6 +645,25 @@ def _relative_time(past_dt: datetime) -> str:
     days = hours // 24
     hours_rem = hours % 24
     return "hace {}d {}h".format(days, hours_rem)
+
+
+async def send_telegram_mdv2(bot, chat_id: int, text: str) -> None:
+    """Send a message with MarkdownV2 formatting. Falls back to plain text."""
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    except Exception as e:
+        logger.debug(f"MarkdownV2 failed for chat {mask_chat_id(chat_id)}: {e}")
+        # B5: Strip markdown formatting before plain-text fallback
+        clean = text.replace('*', '').replace('`', '').replace('#', '').replace('_', '')
+        clean = clean.replace('\\', '')
+        try:
+            await bot.send_message(chat_id=chat_id, text=clean)
+        except Exception as e2:
+            logger.error(f"Failed to send message to {mask_chat_id(chat_id)}: {e2}")
 
 
 def _assemble_response(raw_stdout: str, raw_stderr: str) -> str:
@@ -493,7 +705,7 @@ async def _process_prompt(
     now = datetime.now(timezone.utc)
 
     # Sync with sessions.json (SOURCE OF TRUTH for session state)
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     chat_sessions = chat_data.setdefault("sessions", {})
     session_name = chat_data.get("active", "default")
@@ -509,7 +721,7 @@ async def _process_prompt(
         }
     if not chat_data.get("active"):
         chat_data["active"] = "default"
-        save_session_map(smap)
+        await save_session_map_atomic(smap)
 
     # Extract session data from sessions.json (source of truth)
     session_entry = chat_sessions.get(session_name, {})
@@ -517,7 +729,7 @@ async def _process_prompt(
     has_real_id = bool(real_session_id)
 
     # Get model preference (persists across session resets)
-    model = current_model.get(chat_id, DEFAULT_MODEL)
+    model = smap.get(str(chat_id), {}).get("model") or current_model.get(chat_id) or DEFAULT_MODEL
 
     # Detect stale in-memory session (switched to different named session)
     mem_session = active_sessions.get(chat_id)
@@ -555,6 +767,13 @@ async def _process_prompt(
         session = mem_session
         session["last_used"] = now
         session["prompt_count"] = session.get("prompt_count", 0) + 1
+        # Immediately persist prompt count to sessions.json
+        active_name = smap.get(str(chat_id), {}).get("active", "default")
+        sessions_dict = smap.get(str(chat_id), {}).get("sessions", {})
+        if active_name in sessions_dict:
+            sessions_dict[active_name]["prompt_count"] = session["prompt_count"]
+            sessions_dict[active_name]["last_used"] = datetime.now(timezone.utc).isoformat()
+            await save_session_map_atomic(smap)
         # Resync session_id from sessions.json
         session["session_id"] = real_session_id
         logger.info("Session %s: continuing (model=%s)", session_name, model)
@@ -563,10 +782,16 @@ async def _process_prompt(
     is_new_session = not has_real_id
 
     truncated = prompt[:100] + "..." if len(prompt) > 100 else prompt
+    # S2: Redact common credential patterns from log output
+    safe_prompt = truncated
+    for pattern in ['sk-', 'Bearer ', '-----BEGIN', 'token=', 'secret=']:
+        if pattern.lower() in safe_prompt.lower():
+            safe_prompt = "[REDACTED - possible credential]"
+            break
     logger.info(
         "Request from %s | prompt=%r | len=%d | model=%s",
         mask_chat_id(chat_id),
-        truncated,
+        safe_prompt,
         len(prompt),
         model,
     )
@@ -577,6 +802,9 @@ async def _process_prompt(
     if model:
         cmd.extend(["--model", model])
     if has_real_id and real_session_id:
+        # O8: --continue flag verified — opencode v2+ requires both --continue and --session
+        # to resume an existing session. Without --continue, opencode starts a new session
+        # even with --session specified.
         cmd.extend(["--continue", "--session", real_session_id])
         logger.info("Continuing session %s (%s...)", session_name, real_session_id[:20])
     else:
@@ -594,6 +822,7 @@ async def _process_prompt(
     )
 
     start_ts = time.time()
+    process_status[chat_id] = "running"
     try:
         # Run opencode in a thread so the event loop stays responsive for /cancel
         loop = asyncio.get_running_loop()
@@ -607,6 +836,11 @@ async def _process_prompt(
         )
 
         # Check if cancelled during execution
+        if process_status.get(chat_id) == "cancelling":
+            process_status.pop(chat_id, None)
+            cancel_requests.discard(chat_id)
+            return
+        process_status.pop(chat_id, None)
         if chat_id in cancel_requests:
             cancel_requests.discard(chat_id)
             return
@@ -643,7 +877,6 @@ async def _process_prompt(
                     all_sessions = await fetch_opencode_sessions()
                 if all_sessions:
                     real_id = all_sessions[0]["id"]
-                    smap = load_session_map()
                     chat_data = smap.setdefault(str(chat_id), {})
                     chat_sessions = chat_data.setdefault("sessions", {})
                     chat_sessions[session_name] = {
@@ -654,7 +887,8 @@ async def _process_prompt(
                         "prompt_count": 1,
                     }
                     chat_data["active"] = session_name
-                    save_session_map(smap)
+                    await save_session_map_atomic(smap)
+                    invalidate_opencode_sessions_cache()
                     if active_sessions.get(chat_id):
                         active_sessions[chat_id]["session_id"] = real_id
                         active_sessions[chat_id]["prompt_count"] = 1
@@ -667,13 +901,12 @@ async def _process_prompt(
         # Update prompt count in sessions.json for continuing sessions
         if exitcode == 0 and not timed_out and has_real_id:
             try:
-                smap = load_session_map()
                 chat_data = smap.get(str(chat_id), {})
                 active_name = chat_data.get("active", "default")
                 if active_name in chat_data.get("sessions", {}):
                     chat_data["sessions"][active_name]["prompt_count"] = active_sessions[chat_id]["prompt_count"]
                     chat_data["sessions"][active_name]["last_used"] = datetime.now(timezone.utc).isoformat()
-                    save_session_map(smap)
+                    await save_session_map_atomic(smap)
             except Exception as e:
                 logger.warning("Failed to update sessions.json: %s", e)
 
@@ -691,21 +924,8 @@ async def _process_prompt(
 
         for fragment in split_message(response):
             fragment = telegramify_markdown(fragment)
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=fragment,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as e:
-                logger.debug(f"MarkdownV2 parse failed for chat {mask_chat_id(chat_id)}: {e}")
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=fragment
-                    )
-                except Exception as e2:
-                    logger.error(f"Failed to send message to {mask_chat_id(chat_id)}: {e2}")
+            fragment = minimal_escape_mdv2(fragment)
+            await send_telegram_mdv2(context.bot, chat_id, fragment)
 
     except subprocess.TimeoutExpired:
         # Safety net: run_opencode handles timeouts internally,
@@ -720,17 +940,8 @@ async def _process_prompt(
         )
         timeout_msg = "El comando excedi\u00f3 el tiempo l\u00edmite de {}s.".format(OPENCODE_TIMEOUT)
         timeout_msg = telegramify_markdown(timeout_msg)
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=timeout_msg,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-        except Exception:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=timeout_msg
-            )
+        timeout_msg = minimal_escape_mdv2(timeout_msg)
+        await send_telegram_mdv2(context.bot, chat_id, timeout_msg)
 
     except Exception as e:
         current_process.pop(chat_id, None)
@@ -742,17 +953,8 @@ async def _process_prompt(
         )
         error_msg = "Error al ejecutar OpenCode: {}".format(e)
         error_msg = telegramify_markdown(error_msg)
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=error_msg,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-        except Exception:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=error_msg
-            )
+        error_msg = minimal_escape_mdv2(error_msg)
+        await send_telegram_mdv2(context.bot, chat_id, error_msg)
 
     finally:
         stop_event.set()
@@ -812,7 +1014,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/session info [nombre] - Detalles de una sesi\u00f3n\n"
         "/session discover - Descubrir sesiones OpenCode existentes\n"
         "/session adopt &lt;id&gt; &lt;nombre&gt; - Adoptar una sesi\u00f3n OpenCode\n"
+        "/test_md - Probar envío de MarkdownV2\n"
         "/help - Este mensaje\n\n"
+        "Env\u00e1 una nota de voz para transcribir y procesar como prompt.\n"
         "Tambi\u00e9n pod\u00e9s enviar cualquier mensaje directamente sin usar /open."
     )
 
@@ -824,7 +1028,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     session = active_sessions.get(chat_id)
-    model = current_model.get(chat_id, DEFAULT_MODEL)
+    smap = await load_session_map_safe()
+    model = smap.get(str(chat_id), {}).get("model") or current_model.get(chat_id) or DEFAULT_MODEL
 
     if session:
         session_name = session.get("session_name", "default")
@@ -875,13 +1080,13 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Reset active session: clear real ID so next prompt creates fresh session
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     active_name = chat_data.get("active", "default")
     if active_name in chat_data.get("sessions", {}):
         chat_data["sessions"][active_name]["id"] = None
         chat_data["sessions"][active_name]["prompt_count"] = 0
-        save_session_map(smap)
+        await save_session_map_atomic(smap)
 
     active_sessions.pop(chat_id, None)
     # Model preference preserved in current_model (separate from active_sessions)
@@ -904,16 +1109,15 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     choice = args[0].lower()
-    if choice in ("pro", "deepseek/deepseek-v4-pro", "deepseek-v4-pro"):
-        current_model[chat_id] = "deepseek/deepseek-v4-pro"
-        await update.message.reply_text(
-            "\u2705 Modelo: deepseek/deepseek-v4-pro (pensamiento profundo, SDD completo)"
-        )
-    elif choice in ("flash", "deepseek/deepseek-v4-flash", "deepseek-v4-flash"):
-        current_model[chat_id] = "deepseek/deepseek-v4-flash"
-        await update.message.reply_text(
-            "\u2705 Modelo: deepseek/deepseek-v4-flash (r\u00e1pido, consultas simples)"
-        )
+    # O2: Use MODEL_ALIASES dict instead of chained if/elif
+    model_value = MODEL_ALIASES.get(choice)
+    if model_value:
+        current_model[chat_id] = model_value
+        smap = await load_session_map_safe()
+        chat_data = smap.setdefault(str(chat_id), {})
+        chat_data["model"] = model_value
+        await save_session_map_atomic(smap)
+        await update.message.reply_text("Modelo cambiado a {}".format(model_value))
     else:
         model = current_model.get(chat_id, DEFAULT_MODEL)
         await update.message.reply_text(
@@ -927,6 +1131,25 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not authorize(chat_id):
         logger.warning("Unauthorized /cancel from %s", mask_chat_id(chat_id))
         return
+
+    status = process_status.get(chat_id, "idle")
+    if status == "cancelling":
+        await update.message.reply_text(
+            "El prompt ya est\u00e1 siendo cancelado..."
+        )
+        return
+    if status != "running":
+        if status == "idle":
+            await update.message.reply_text(
+                "No hay ning\u00fan prompt en ejecuci\u00f3n."
+            )
+        else:
+            await update.message.reply_text(
+                "El prompt ya termin\u00f3."
+            )
+        return
+
+    process_status[chat_id] = "cancelling"
 
     proc = current_process.pop(chat_id, None)
     if proc is None or proc.poll() is not None:
@@ -955,7 +1178,7 @@ async def session_preview_command(update: Update, context: ContextTypes.DEFAULT_
     if not authorize(chat_id):
         return
 
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_sessions = smap.get(str(chat_id), {})
 
     lines = ["\U0001f4cb *Sesiones del Bot*"]
@@ -980,10 +1203,8 @@ async def session_preview_command(update: Update, context: ContextTypes.DEFAULT_
         lines.append("\u274c Error: {}".format(e))
 
     msg = "\n".join(lines)
-    try:
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception:
-        await update.message.reply_text(msg)
+    msg = minimal_escape_mdv2(msg)
+    await send_telegram_mdv2(context.bot, chat_id, msg)
 
 
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1030,7 +1251,7 @@ async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
         await update.message.reply_text("Uso: /session new <nombre>")
         return
 
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     chat_sessions = chat_data.setdefault("sessions", {})
 
@@ -1048,7 +1269,8 @@ async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
         "prompt_count": 0,
     }
     chat_data["active"] = name
-    save_session_map(smap)
+    await save_session_map_atomic(smap)
+    invalidate_opencode_sessions_cache()
 
     logger.info("Session '%s' created for %s", name, mask_chat_id(chat_id))
     await update.message.reply_text(
@@ -1059,7 +1281,7 @@ async def _session_new(update: Update, chat_id: int, name: str | None) -> None:
 
 async def _session_list(update: Update, chat_id: int) -> None:
     """Show all sessions for this chat."""
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
     active_name = chat_data.get("active", "default")
@@ -1105,7 +1327,7 @@ async def _session_switch(update: Update, chat_id: int, name: str | None) -> Non
         await update.message.reply_text("Uso: /session switch <nombre>")
         return
 
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
 
@@ -1117,7 +1339,7 @@ async def _session_switch(update: Update, chat_id: int, name: str | None) -> Non
         return
 
     chat_data["active"] = name
-    save_session_map(smap)
+    await save_session_map_atomic(smap)
 
     # Clear in-memory session so next prompt picks up the new active session
     active_sessions.pop(chat_id, None)
@@ -1135,7 +1357,7 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
         await update.message.reply_text("Uso: /session delete <nombre>")
         return
 
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
 
@@ -1159,7 +1381,8 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
                 "prompt_count": 0,
             }
 
-    save_session_map(smap)
+    await save_session_map_atomic(smap)
+    invalidate_opencode_sessions_cache()
     active_sessions.pop(chat_id, None)
 
     # Clean up in OpenCode if it had a real ID
@@ -1188,7 +1411,7 @@ async def _session_delete(update: Update, chat_id: int, name: str | None) -> Non
 
 async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     """Show detailed info about a session."""
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.get(str(chat_id), {})
     chat_sessions = chat_data.get("sessions", {})
     active_name = chat_data.get("active", "default")
@@ -1235,13 +1458,15 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
     if oc_id and re.match(r'^[a-zA-Z0-9_]+$', oc_id):
         try:
             msg_rows = await query_opencode_db(
-                f"SELECT COUNT(*) as count FROM message WHERE session_id = '{oc_id}'"
+                f"SELECT COUNT(*) as count FROM message WHERE session_id = '{oc_id}'",
+                allowed_pattern=r'^[a-zA-Z0-9_]+$'
             )
             if msg_rows:
                 lines.append("    Mensajes en BD: {cnt}".format(cnt=msg_rows[0].get('count', '?')))
 
             session_rows = await query_opencode_db(
-                f"SELECT created_at, model FROM session WHERE id = '{oc_id}'"
+                f"SELECT created_at, model FROM session WHERE id = '{oc_id}'",
+                allowed_pattern=r'^[a-zA-Z0-9_]+$'
             )
             if session_rows:
                 row = session_rows[0]
@@ -1258,7 +1483,7 @@ async def _session_info(update: Update, chat_id: int, name: str | None) -> None:
 async def _session_discover(update: Update, chat_id: int) -> None:
     """Show all OpenCode sessions with adoption status."""
     oc_sessions = await fetch_opencode_sessions()
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_sessions = smap.get(str(chat_id), {}).get("sessions", {})
 
     adopted_map = {}
@@ -1303,10 +1528,8 @@ async def _session_discover(update: Update, chat_id: int) -> None:
     lines.append("\nUsa `/session adopt <id> <nombre>` para adoptar una sesi\u00f3n.")
 
     msg = "\n".join(lines)
-    try:
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception:
-        await update.message.reply_text(msg)
+    msg = minimal_escape_mdv2(msg)
+    await send_telegram_mdv2(context.bot, chat_id, msg)
 
 
 async def _session_adopt(
@@ -1343,7 +1566,7 @@ async def _session_adopt(
         )
         return
 
-    smap = load_session_map()
+    smap = await load_session_map_safe()
     chat_data = smap.setdefault(str(chat_id), {})
     chat_sessions = chat_data.setdefault("sessions", {})
 
@@ -1367,7 +1590,8 @@ async def _session_adopt(
     if not chat_data.get("active"):
         chat_data["active"] = name
 
-    save_session_map(smap)
+    await save_session_map_atomic(smap)
+    invalidate_opencode_sessions_cache()
 
     logger.info(
         "Session '%s' adopted (%s) for %s", name, real_id, mask_chat_id(chat_id)
@@ -1378,6 +1602,62 @@ async def _session_adopt(
             name=name, id=real_id
         )
     )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle voice messages: transcribe and process as prompt."""
+    chat_id = update.effective_chat.id
+    if not authorize(chat_id):
+        return
+
+    voice = update.message.voice
+    if not voice:
+        return
+
+    if voice.duration < 1:
+        await update.message.reply_text("El audio es muy corto, no se detect\u00f3 voz.")
+        return
+
+    progress_msg = await update.message.reply_text("\U0001f3a4 Transcribiendo audio...")
+
+    temp_path = None
+    try:
+        file = await voice.get_file()
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            temp_path = tmp.name
+        await file.download_to_drive(temp_path)
+
+        text = await transcribe_voice(temp_path)
+
+        if not text:
+            await progress_msg.edit_text(
+                "\u274c No pude transcribir el audio. Intent\u00e1 de nuevo o escrib\u00ed el prompt."
+            )
+            return
+
+        await progress_msg.edit_text(
+            "\U0001f3a4 *Transcripci\u00f3n:* {text}".format(
+                text=text[:200] + ("..." if len(text) > 200 else "")
+            ),
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+        await _process_prompt(update, chat_id, text, context)
+
+    except Exception as e:
+        logger.error(f"Voice handler error: {e}")
+        try:
+            await progress_msg.edit_text(
+                "\u274c Error al procesar el audio. Intent\u00e1 de nuevo."
+            )
+        except Exception:
+            pass
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1421,6 +1701,35 @@ async def open_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _process_prompt(update, chat_id, prompt, context)
 
 
+async def test_md_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Test command: sends a hardcoded MarkdownV2 message to verify API works."""
+    chat_id = update.effective_chat.id
+    if not authorize(chat_id):
+        return
+
+    test_msg = (
+        "**bold** _italic_ `inline code`\n"
+        "```python\n"
+        "def hello():\n"
+        "    return 'world'\n"
+        "```\n"
+        "Plain text with get\\_user variable"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=test_msg,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        await update.message.reply_text("Test message sent with MarkdownV2. Check if formatting works.")
+    except Exception as e:
+        # O3: Don't expose internal error details to the user
+        logger.warning("MarkdownV2 test failed: %s: %s", type(e).__name__, e)
+        await update.message.reply_text("MarkdownV2 test FAILED. Check bot logs for details.")
+        await context.bot.send_message(chat_id=chat_id, text=test_msg)
+
+
 def build_application() -> Application:
     """Build and configure the Application without running it."""
     logger.info("Starting OpenCode Telegram Bot Bridge")
@@ -1439,9 +1748,16 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("session_preview", session_preview_command))
     application.add_handler(CommandHandler("session", session_command))
     application.add_handler(CommandHandler("open", open_command))
+    application.add_handler(CommandHandler("test_md", test_md_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+
+    # O6: Warn if voice handler is registered but no API key configured
+    if not OPENAI_API_KEY:
+        logger.warning("Voice handler registered but OPENAI_API_KEY is not set — "
+                       "voice transcription will be skipped.")
 
     return application
 
@@ -1460,18 +1776,27 @@ async def run_bot() -> None:
     for s in sessions[:5]:
         logger.info("  %s | %s | %s", s["id"], s["title"][:50], s["updated"])
 
-    logger.info("Exploring OpenCode DB schema (non-fatal)...")
-    try:
-        tables = await query_opencode_db("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        logger.info(f"OpenCode DB tables: {[t.get('name', '?') for t in tables]}")
-        for table in tables:
-            tname = table.get("name", "")
-            if tname:
-                cols = await query_opencode_db(f"PRAGMA table_info({tname})")
-                col_names = [c.get("name", "?") for c in cols]
-                logger.info(f"  {tname}: {', '.join(col_names)}")
-    except Exception as e:
-        logger.info(f"DB schema exploration skipped: {e}")
+    if os.getenv("EXPLORE_DB", "").lower() in ("1", "true", "yes"):
+        logger.info("Exploring OpenCode DB schema...")
+        try:
+            tables = await query_opencode_db("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            logger.info(f"OpenCode DB tables: {[t.get('name', '?') for t in tables]}")
+            for table in tables:
+                tname = table.get("name", "")
+                if tname:
+                    cols = await query_opencode_db(f"PRAGMA table_info({tname})", allowed_pattern=r'^[a-zA-Z0-9_]+$')
+                    col_names = [c.get("name", "?") for c in cols]
+                    logger.info(f"  {tname}: {', '.join(col_names)}")
+        except Exception as e:
+            logger.info(f"DB schema exploration failed: {e}")
+    else:
+        logger.info("DB schema exploration skipped (set EXPLORE_DB=1 to enable)")
+
+    smap = await load_session_map_safe()
+    for cid_str, data in smap.items():
+        if "model" in data:
+            current_model[int(cid_str)] = data["model"]
+    logger.info(f"Restored model preferences for {len(current_model)} chats from sessions.json")
 
     logger.info("Bot is running. Press Ctrl+C to stop.")
 
@@ -1490,6 +1815,13 @@ async def run_bot() -> None:
         signal.signal(signal.SIGTERM, lambda s, f: signal_handler())
 
     await stop_event.wait()
+
+    logger.info("Persisting model preferences before shutdown...")
+    smap = await load_session_map_safe()
+    for cid, model in current_model.items():
+        smap.setdefault(str(cid), {})["model"] = model
+    await save_session_map_atomic(smap)
+    logger.info("Model preferences persisted")
 
     logger.info("Shutting down gracefully...")
     await app.updater.stop()

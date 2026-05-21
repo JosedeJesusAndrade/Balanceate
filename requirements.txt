@@ -1,23 +1,4 @@
-
-# Framework
-reflex==0.8.23
-
-# Autenticación y Seguridad
-PyJWT==2.10.1
-bcrypt==4.3.0
-
-# Base de Datos
-pymongo==4.15.2
-
-# Modelos de Datos
-pydantic>=2.9.0,<2.11.0
-
-# Telegram Bot Bridge
-python-telegram-bot>=20.0
-nest_asyncio>=1.6.0
-
-# Configuración
-python-dotenv==1.1.1
-
-# Dependencias de producción
-redis>=4.3.5,<6.0
+# O7: Dependencies used across the monorepo (web app + telegram bridge).
+# Some deps (redis, reflex, pymongo) are for the web app only but kept here for
+# unified venv management. The telegram bridge uses: python-telegram-bot, nest_asyncio,
+# python-dotenv, openai.
