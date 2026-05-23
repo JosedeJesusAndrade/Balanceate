@@ -61,7 +61,7 @@ MODEL_ALIASES = {
 }
 
 # ─── Sessions ───
-SESSION_TIMEOUT_MINUTES = 30
+SESSION_TIMEOUT_MINUTES = 60
 SESSION_DB = Path(__file__).resolve().parent / "sessions.json"
 
 # ─── Logging ───

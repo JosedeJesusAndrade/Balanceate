@@ -5,22 +5,53 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-uri = os.getenv("MONGO_URI")
+_client = None
+_db = None
 
-client = MongoClient(
-    uri,
-    server_api=ServerApi('1'),
-    serverSelectionTimeoutMS=10000,  # 10s para detectar problemas rápido
-)
+_COLLECTION_MAP = {
+    "movimientos_collection": "movimientos",
+    "usuarios_collection": "usuarios",
+    "balances_collection": "balances",
+}
 
-db = client["balanceate"]
 
-movimientos_collection = db["movimientos"]
-usuarios_collection = db["usuarios"]
-balances_collection = db["balances"]
+def _connect():
+    global _client, _db
+    if _client is None:
+        uri = os.getenv("MONGO_URI")
+        if not uri:
+            raise RuntimeError("MONGO_URI no está configurado en .env")
+        _client = MongoClient(
+            uri,
+            server_api=ServerApi("1"),
+            serverSelectionTimeoutMS=10000,
+        )
+        _db = _client["balanceate"]
+        try:
+            _client.admin.command("ping")
+            print("✅ Conectado exitosamente a MongoDB Atlas.")
+        except Exception as e:
+            _client = None
+            _db = None
+            print("❌ Error de conexión con MongoDB:", e)
+            raise
+    return _db
 
-try:
-    client.admin.command('ping')
-    print("✅ Conectado exitosamente a MongoDB Atlas.")
-except Exception as e:
-    print("❌ Error de conexión con MongoDB:", e)
+
+def get_client():
+    _connect()
+    return _client
+
+
+def get_db():
+    return _connect()
+
+
+def get_collection(name: str):
+    return _connect()[name]
+
+
+def __getattr__(name):
+    if name in _COLLECTION_MAP:
+        return _connect()[_COLLECTION_MAP[name]]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -2,3 +2,9 @@
 # Some deps (redis, reflex, pymongo) are for the web app only but kept here for
 # unified venv management. The telegram bridge uses: python-telegram-bot, nest_asyncio,
 # python-dotenv, openai.
+
+# Telegram Bridge dependencies
+python-telegram-bot>=21.0
+nest-asyncio>=1.6.0
+python-dotenv>=1.0.0
+openai>=1.0.0

@@ -1,0 +1,131 @@
+000|heading_1           | # 📋 Propósito del Proyecto
+001|paragraph           | Balanceate es un proyecto dual que combina dos sistemas complementarios:
+002|paragraph           | 1. Balanceate App — Una aplicación web de finanzas personales construida con Reflex (Python) que permite a los usuarios gestionar ingresos, gastos y deudas con autenticación JWT y MongoDB Atlas como base de datos.
+003|paragraph           | 2. Telegram-OpenCode SDD Bridge — Un bot de Telegram que actúa como puente entre el usuario y OpenCode CLI. Permite ejecutar prompts de desarrollo de software desde el teléfono móvil, con acceso a todos los MCPs (Engram, Context7, Notion) y al orquestador SDD (Spec-Driven Development).
+004|heading_2           | ## El Problema que Resuelve el Bridge
+005|paragraph           | El usuario principal es un repartidor de Uber que necesita gestionar proyectos de software mientras está en la calle. OpenCode CLI solo se ejecuta en terminal de escritorio — el bridge expone el 100% de la funcionalidad del orquestador SDD a través de Telegram, permitiendo desarrollo remoto, continuidad de sesión, acceso a MCPs y control granular del modelo.
+006|heading_1           | # 🕐 Sesiones Técnicas Más Importantes
+007|heading_2           | ## Sesión 1 — Construcción del Puente Inicial (Mayo 6, 2026)
+008|paragraph           | Objetivo: Construir el bot Telegram↔OpenCode CLI para enviar prompts desde el teléfono y ejecutarlos en la PC con todos los MCPs (Engram, Context7, Notion) y el orquestador Gentleman (SDD). Se creó el bot con BotFather, se implementó el bridge inicial con subprocess.run, y se creó get_chat_id.py para obtener el ID de Telegram.
+009|heading_2           | ## Sesión 2 — Bugfix: PATH Resolution (v1.1)
+010|paragraph           | Bug: FileNotFoundError — 'opencode' no se encontraba en PATH. Solución: Se implementó resolve_opencode_cmd() con 4 fallbacks en cadena: OPENCODE_CMD env var → shutil.which('opencode') → shutil.which('opencode.cmd') → ruta npm conocida → fallback 'opencode'.
+011|heading_2           | ## Sesión 3 — Refactor SDD Orchestration (v1.2-v1.4, Mayo 2026)
+012|paragraph           | Refactor completo del bot (703 líneas) en telegram_bridge/bot.py agregando manejo de sesiones SDD con --continue --session, timeout robusto con subprocess.Popen, model switching (pro vs flash) con persistencia, prompt cancellation con taskkill /T + flag de supresión, pipeline de limpieza de output (ANSI removal, stderr filter, smart split), comando /status mejorado con uptime y tiempos relativos en español.
+013|heading_2           | ## Sesión 4 — Bugfix: Ctrl+C Shutdown (v1.6)
+014|paragraph           | Bug: El viejo signal handler llamaba application.stop() (una coroutine) sincrónicamente, produciendo 'RuntimeWarning: coroutine Application.stop was never awaited'. Solución: Se reemplazó application.run_polling() con manejo de ciclo de vida async usando run_bot() coroutine + asyncio.Event para capturar señales correctamente.
+015|heading_2           | ## Sesión 5 — Robustez Final (v1.6)
+016|paragraph           | Adiciones: nest_asyncio para compatibilidad con event loops anidados en Windows, run_in_executor para ejecución no bloqueante de OpenCode, RotatingFileHandler (5MB, 3 backups), mask_chat_id() para privacidad en logs, y CREATE_NEW_PROCESS_GROUP para protección contra Ctrl+C en procesos hijo.
+017|divider             | ---
+018|heading_1           | # 📁 Estructura del Proyecto
+019|heading_2           | ## Árbol de Directorios — Bridge Telegram
+020|code                | CODE: telegram_bridge/
+├── __init__.py          # Paquete Python
+├── bot.py               # Daemon principal (703 líneas)
+├── get_chat_id.py       # Utilidad para obtener chat ID
+├── run_bot.bat          # Launcher para Windows
+├── bot.log              # Logs rotativos (5MB, 3 backups)
+└── DOCUMENTACION.md     # Doc detallada del bridge (928 líneas)
+021|heading_2           | ## Árbol de Directorios — App Web Balanceate
+022|code                | CODE: Balanceate/
+├── __init__.py
+├── Balanceate.py        # Entry point Reflex (110 líneas)
+├── state.py             # Estado global (464 líneas)
+├── models.py            # Usuario, Movimiento, Balance, GrupoMovimientos
+├── Componentes/         # UI components
+├── db/                  # Capa de datos: MongoDB + Repositories
+├── services/            # Capa de lógica: auth, movimientos, balance, validación
+├── styles/              # CSS + temas
+└── view/                # Páginas: auth, login, registro, balance, movimientos
+023|heading_2           | ## Arquitectura del Bridge
+024|paragraph           | Telegram App → python-telegram-bot (asyncio) → subprocess.Popen → OpenCode CLI → MCPs (Context7, Engram, Notion). El bridge no interpreta ni modifica los prompts — cada mensaje se convierte en opencode run --model <X> --continue --session telegram-<chat_id> "<prompt>" y se ejecuta en un thread pool (run_in_executor) para no bloquear el event loop de Telegram.
+025|heading_2           | ## Arquitectura de la App Web
+026|paragraph           | Clean Architecture con patrón Repository/Service: Reflex (UI) → State (rx.State + LocalStorage) → Services (lógica de negocio pura) → Repositories (MongoDB). Autenticación JWT con bcrypt, validación en capa de servicios, balance calculado desde documentos en tiempo real.
+027|divider             | ---
+028|heading_1           | # 🚀 Cómo Ejecutar el Proyecto
+029|heading_2           | ## Requisitos
+030|paragraph           | Windows 10/11, Python 3.10+, Node.js (para OpenCode CLI), OpenCode CLI instalado vía npm global, Bot de Telegram creado con @BotFather, MongoDB Atlas (para la app web).
+031|heading_2           | ## Instalación Paso a Paso
+032|numbered_list_item  | 1. Clonar el repositorio: git clone <repo> && cd Balanceate
+033|numbered_list_item  | 1. Crear entorno virtual: python -m venv venv && venv\Scripts\activate
+034|numbered_list_item  | 1. Instalar dependencias: pip install -r requirements.txt
+035|numbered_list_item  | 1. Instalar OpenCode CLI: npm install -g @anthropic/opencode
+036|numbered_list_item  | 1. Crear bot en Telegram con @BotFather y guardar el token
+037|numbered_list_item  | 1. Obtener chat ID: python telegram_bridge/get_chat_id.py (enviar /start al bot, anotar el ID impreso)
+038|numbered_list_item  | 1. Configurar .env: TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, MONGO_URI, JWT_SECRET, OPENCODE_WORKDIR, OPENCODE_TIMEOUT
+039|numbered_list_item  | 1. Ejecutar bot: python -m telegram_bridge.bot (o doble-click en run_bot.bat)
+040|heading_2           | ## Ejecutar la App Web Balanceate
+041|paragraph           | Comando: reflex run. Se sirve en http://localhost:3000. Rutas: / (login/inicio), /registro, /config, /prueba. El proyecto usa Reflex 0.8.23 con Redis para state management en producción.
+042|heading_2           | ## Variables de Entorno (.env)
+043|code                | CODE: # Telegram Bridge
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+ALLOWED_CHAT_IDS=8664220427,1234567890
+OPENCODE_WORKDIR=C:\Users\...\Balanceate
+OPENCODE_TIMEOUT=300
+OPENCODE_CMD=                         # (opcional, auto-detectado)
+
+# App Web
+MONGO_URI=mongodb+srv://...
+JWT_SECRET=mi-secreto-jwt
+JWT_EXPIRES_DAYS=7
+
+# Reflex
+REFLEX_LOCK_EXPIRATION=60000
+REFLEX_LOCK_SLEEP=0.1
+044|heading_2           | ## Comandos Disponibles del Bot
+045|paragraph           | • /start — Iniciar bot
+• /help — Lista de comandos
+• /status — Estado de sesión (modelo, uptime, prompts)
+• /new — Nueva sesión SDD (descarta contexto)
+• /model pro|flash — Cambiar modelo (deepseek-v4-pro o deepseek-v4-flash)
+• /cancel — Cancelar prompt en ejecución
+• /open <prompt> — Enviar prompt explícito
+• Cualquier texto sin / — Se trata como prompt directo a OpenCode
+046|divider             | ---
+047|heading_1           | # 🔍 Auditoría y Propuestas de Mejora
+048|heading_2           | ## 🟡 Mejoras de Alta Prioridad — Bridge Telegram
+049|heading_3           | ### 1. El bot no tiene persistencia de sesiones entre reinicios
+050|paragraph           | Problema: active_sessions se almacena en un dict en memoria. Si el bot se reinicia (crash, actualización, corte de luz), todas las sesiones activas se pierden. Solución propuesta: Guardar active_sessions en disco (JSON o SQLite) y restaurarlas al iniciar. Así el usuario no pierde su contexto SDD si el bot se cae.
+051|heading_3           | ### 2. No hay indicador de progreso durante prompts largos
+052|paragraph           | Problema: El mensaje "Procesando tu prompt con OpenCode..." se queda estático, incluso si el prompt tarda 5 minutos. El usuario no sabe si el bot se colgó. Solución: Usar asyncio.create_task para editar el mensaje periódicamente (cada 15s) con el tiempo transcurrido, ej. "Procesando... (45s)".
+053|heading_3           | ### 3. Sin límite de concurrencia global entre chats
+054|paragraph           | Problema: Múltiples chats pueden ejecutar OpenCode en paralelo sin límite. Esto puede saturar la CPU. Solución: Agregar un semáforo global (asyncio.Semaphore) que limite a 2-3 ejecuciones concurrentes de OpenCode, y poner el resto en cola.
+055|heading_2           | ## 🟠 Mejoras de Media Prioridad — Bridge Telegram
+056|heading_3           | ### 4. Las respuestas no tienen formato Markdown en Telegram
+057|paragraph           | Problema: Los bloques de código aparecen como texto plano. Solución: Enviar respuestas con parse_mode='MarkdownV2' o 'HTML' de Telegram, escapando caracteres especiales. Esto daría syntax highlighting en fragmentos de código.
+058|heading_3           | ### 5. No hay historial de prompts ni comando /retry
+059|paragraph           | Problema: Si un prompt falla por timeout, el usuario debe reescribirlo completo. Solución: Guardar el último prompt por chat y agregar comando /retry para reenviarlo. Opcional: persistir los últimos N prompts en Engram vía MCP.
+060|heading_3           | ### 6. El bot no soporta adjuntar archivos
+061|paragraph           | Problema: El usuario no puede enviar capturas de pantalla, PDFs ni archivos de código. Solución: Agregar handler para fotos/documentos, descargarlos a un directorio temporal y pasarlos como contexto adicional a OpenCode.
+062|heading_2           | ## 🟠 Mejoras de Media Prioridad — App Web Balanceate
+063|heading_3           | ### 7. Duplicación de ResultadoValidacion en 2 archivos
+064|paragraph           | Problema: La clase ResultadoValidacion está definida tanto en validacion_service.py como en movimiento_service.py. Es un code smell de duplicación. Solución: Mover a un módulo compartido (ej. services/resultados.py) e importar desde ahí.
+065|heading_3           | ### 8. El valor de Movimiento se guarda como string en algunos casos
+066|paragraph           | Problema: En convertir_documentos_a_movimientos() (movimiento_service.py:175), el valor se castea a str: valor=str(valor_formateado). El modelo Pydantic espera float. Esto puede causar bugs silenciosos. Solución: Mantener como float en todo el pipeline.
+067|heading_3           | ### 9. Conexión MongoDB global sin pool management
+068|paragraph           | Problema: db.py crea un MongoClient global al importarse. No hay manejo de reconexión ni health checks periódicos. Solución: Agregar retry con exponential backoff, un health check periódico (ping cada 60s), y lazy initialization del client.
+069|heading_2           | ## 🟢 Mejoras de Baja Prioridad
+070|paragraph           | • Tests automatizados: No hay tests unitarios para clean_opencode_output, split_message, validaciones, ni el flujo del bridge. Agregar pytest con mocks de OpenCode.
+• Comando /config: Permitir modificar timeout y workdir desde Telegram sin tocar .env.
+• Rate limiting: Limitar prompts/minuto por chat para evitar consumo excesivo de API.
+• Dashboard web: Página local con logs, sesiones activas y stats del bot.
+• Voice messages: Procesar notas de voz con speech-to-text.
+• Auto-resumen de sesión: Al expirar, guardar resumen en Engram.
+• Servicio Windows: Usar NSSM para ejecutar el bot como servicio.
+071|divider             | ---
+072|heading_1           | # 📊 Stack Tecnológico y Conclusiones
+073|heading_2           | ## Stack del Bridge Telegram
+074|paragraph           | Python 3.13 + python-telegram-bot v22+ (asyncio) + nest_asyncio + subprocess.Popen + OpenCode CLI (npm) + python-dotenv. MCPs: Context7 (docs), Engram (memoria), Notion (páginas).
+075|heading_2           | ## Stack de la App Web Balanceate
+076|paragraph           | Python + Reflex 0.8.23 (React server-side) + MongoDB Atlas (pymongo 4.15.2) + PyJWT + bcrypt + Pydantic v2 + Redis (state management). Clean Architecture: Repository/Service pattern.
+077|heading_2           | ## Bugs Históricos Resueltos
+078|code                | CODE: v1.0  FileNotFoundError          > resolve_opencode_cmd() 4 fallbacks
+v1.2  Pérdida de contexto         > Sesiones con --continue --session
+v1.3  ANSI codes visibles         > clean_opencode_output() regex
+v1.3  Respuestas truncadas        > split_message() 4000 chars
+v1.4  Procesos zombie             > taskkill /T (árbol completo)
+v1.5  Respuesta post-cancel       > cancel_requests set flag
+v1.6  Event loop bloqueado        > run_in_executor + nest_asyncio
+v1.6  Ctrl+C shutdown incorrecto  > run_bot() async lifecycle
+079|heading_2           | ## Resumen Final
+080|paragraph           | El proyecto Balanceate combina una app web de finanzas (Reflex + MongoDB) con un bridge Telegram-OpenCode para desarrollo SDD remoto. El bridge (703 líneas en bot.py) evolucionó de un prototipo simple a un sistema robusto con sesiones, timeout, cancelación, cambio de modelo y limpieza de output. Las mejoras más urgentes son: persistencia de sesiones entre reinicios, indicador de progreso, y límite de concurrencia. La app web tiene una arquitectura limpia pero necesita DRY en validaciones y mejor manejo de conexión MongoDB.
+081|paragraph           | Página en Notion: Documentación General — Balanceate + Telegram Bridge
