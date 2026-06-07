@@ -8,3 +8,4 @@ python-telegram-bot>=21.0
 nest-asyncio>=1.6.0
 python-dotenv>=1.0.0
 openai>=1.0.0
+reflex==0.7.8
